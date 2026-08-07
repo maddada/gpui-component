@@ -1,7 +1,7 @@
 use crate::actions::{Cancel, Confirm, SelectDown, SelectUp};
 use crate::actions::{SelectLeft, SelectRight};
 use crate::menu::menu_item::MenuItemElement;
-use crate::scroll::ScrollableElement;
+use crate::scroll::{ScrollableElement, Scrollbar, ScrollbarShow};
 use crate::{ActiveTheme, ElementExt, Icon, IconName, Sizable as _, h_flex, v_flex};
 use crate::{Side, Size, StyledExt, kbd::Kbd};
 use gpui::{
@@ -288,6 +288,7 @@ pub struct PopupMenu {
     min_width: Option<Pixels>,
     max_width: Option<Pixels>,
     max_height: Option<Pixels>,
+    items_padding_bottom: Option<Pixels>,
     bounds: Bounds<Pixels>,
     size: Size,
     check_side: Side,
@@ -295,6 +296,8 @@ pub struct PopupMenu {
     /// The parent menu of this menu, if this is a submenu
     parent_menu: Option<WeakEntity<Self>>,
     scrollable: bool,
+    scrollbar_show: Option<ScrollbarShow>,
+    scrollbar_thickness: Option<Pixels>,
     external_link_icon: bool,
     scroll_handle: ScrollHandle,
     // This will update on render
@@ -327,6 +330,7 @@ impl PopupMenu {
             min_width: None,
             max_width: None,
             max_height: None,
+            items_padding_bottom: None,
             check_side: Side::Left,
             bounds: Bounds::default(),
             scrollable: false,
@@ -336,6 +340,8 @@ impl PopupMenu {
             submenu_anchor: (Anchor::TopLeft, Pixels::ZERO),
             priority: 1,
             _subscriptions: vec![],
+            scrollbar_show: None,
+            scrollbar_thickness: None,
         }
     }
 
@@ -391,11 +397,29 @@ impl PopupMenu {
         self
     }
 
+    /// Override the bottom padding of the menu items column.
+    pub fn items_padding_bottom(mut self, padding: impl Into<Pixels>) -> Self {
+        self.items_padding_bottom = Some(padding.into());
+        self
+    }
+
     /// Set the menu to be scrollable to show vertical scrollbar.
     ///
     /// NOTE: If this is true, the sub-menus will cannot be support.
     pub fn scrollable(mut self, scrollable: bool) -> Self {
         self.scrollable = scrollable;
+        self
+    }
+
+    /// Set how the menu scrollbar is revealed.
+    pub fn scrollbar_show(mut self, scrollbar_show: ScrollbarShow) -> Self {
+        self.scrollbar_show = Some(scrollbar_show);
+        self
+    }
+
+    /// Set the menu scrollbar track and thumb thickness.
+    pub fn scrollbar_thickness(mut self, thickness: impl Into<Pixels>) -> Self {
+        self.scrollbar_thickness = Some(thickness.into());
         self
     }
 
@@ -1332,6 +1356,15 @@ impl Render for PopupMenu {
             check_side: self.check_side,
             radius: cx.theme().radius.min(px(8.)),
         };
+        let custom_scrollbar = self.scrollable
+            && (self.scrollbar_show.is_some() || self.scrollbar_thickness.is_some());
+        let mut scrollbar = Scrollbar::vertical(&self.scroll_handle);
+        if let Some(show) = self.scrollbar_show {
+            scrollbar = scrollbar.scrollbar_show(show);
+        }
+        if let Some(thickness) = self.scrollbar_thickness {
+            scrollbar = scrollbar.thickness(thickness);
+        }
 
         v_flex()
             .id("popup-menu")
@@ -1353,6 +1386,7 @@ impl Render for PopupMenu {
                 v_flex()
                     .id("items")
                     .p_1()
+                    .when_some(self.items_padding_bottom, |this, padding| this.pb(padding))
                     .gap_y_0p5()
                     .min_w(rems(8.))
                     .when_some(self.min_width, |this, min_width| this.min_w(min_width))
@@ -1372,9 +1406,20 @@ impl Render for PopupMenu {
                     )
                     .on_prepaint(move |bounds, _, cx| view.update(cx, |r, _| r.bounds = bounds)),
             )
-            .when(self.scrollable, |this| {
+            .when(self.scrollable && !custom_scrollbar, |this| {
                 // TODO: When the menu is limited by `overflow_y_scroll`, the sub-menu will cannot be displayed.
                 this.vertical_scrollbar(&self.scroll_handle)
+            })
+            .when(custom_scrollbar, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .right_0()
+                        .bottom_0()
+                        .left_0()
+                        .child(scrollbar),
+                )
             })
     }
 }
