@@ -780,12 +780,7 @@ pub trait ManagedTooltipExt: StatefulInteractiveElement + crate::ElementExt + Si
                     } else {
                         let bounds = trigger_bounds_cell.get();
                         overlay.update(cx, |o: &mut TooltipOverlay, cx| {
-                            o.request_hide(
-                                bounds,
-                                discrete_show_delay.is_some(),
-                                window,
-                                cx,
-                            );
+                            o.request_hide(bounds, discrete_show_delay.is_some(), window, cx);
                         });
                     }
                 }
