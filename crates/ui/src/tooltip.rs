@@ -103,11 +103,14 @@ impl Render for Tooltip {
             }
         };
 
-        div().child(
-            // Wrap in a child, to ensure the left margin is applied to the tooltip
+        // The wrapper must be a flex container: block layout collapses the
+        // bubble's vertical margins, so the overlay positioner would measure a
+        // box without them and place the bubble flush against its trigger.
+        div().flex().child(
             h_flex()
                 .font_family(cx.theme().font_family.clone())
-                .m_3()
+                .mx_3()
+                .my_2()
                 .bg(cx.theme().tokens.popover)
                 .text_color(cx.theme().popover_foreground)
                 .bg(cx.theme().tokens.popover)
