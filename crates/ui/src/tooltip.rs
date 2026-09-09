@@ -169,6 +169,8 @@ pub enum ManagedTooltipPlacement {
     Below,
     /// Place the tooltip below the trigger with their right edges aligned.
     BelowLeft,
+    /// Place the tooltip below the trigger with their left edges aligned.
+    BelowRight,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -178,6 +180,7 @@ enum TooltipPlacement {
     Left,
     Right,
     BelowLeft,
+    BelowRight,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -263,6 +266,13 @@ fn tooltip_overlay_position_with_placement(
                 tooltip_size,
             ),
             TooltipPlacement::BelowLeft,
+        ),
+        ManagedTooltipPlacement::BelowRight => (
+            Bounds::new(
+                point(trigger_bounds.left(), trigger_bounds.bottom()),
+                tooltip_size,
+            ),
+            TooltipPlacement::BelowRight,
         ),
     };
 
