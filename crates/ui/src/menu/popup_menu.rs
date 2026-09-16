@@ -279,6 +279,22 @@ impl PopupMenuItem {
     }
 }
 
+/// Menu-specific geometry and colors, independent of other themed controls.
+#[derive(Clone, Copy)]
+pub struct PopupMenuAppearance {
+    pub shadow: bool,
+    pub panel_radius: Pixels,
+    pub item_radius: Pixels,
+    pub padding: Pixels,
+    pub item_padding_x: Pixels,
+    pub item_height: Pixels,
+    pub separator_margin: Pixels,
+    pub background: gpui::Hsla,
+    pub foreground: gpui::Hsla,
+    pub border: gpui::Hsla,
+    pub hover: gpui::Hsla,
+}
+
 pub struct PopupMenu {
     pub(crate) focus_handle: FocusHandle,
     pub(crate) menu_items: Vec<PopupMenuItem>,
@@ -289,6 +305,7 @@ pub struct PopupMenu {
     max_width: Option<Pixels>,
     max_height: Option<Pixels>,
     items_padding_bottom: Option<Pixels>,
+    appearance: Option<PopupMenuAppearance>,
     bounds: Bounds<Pixels>,
     size: Size,
     check_side: Side,
@@ -331,6 +348,7 @@ impl PopupMenu {
             max_width: None,
             max_height: None,
             items_padding_bottom: None,
+            appearance: None,
             check_side: Side::Left,
             bounds: Bounds::default(),
             scrollable: false,
@@ -351,6 +369,11 @@ impl PopupMenu {
         f: impl FnOnce(Self, &mut Window, &mut Context<PopupMenu>) -> Self,
     ) -> Entity<Self> {
         cx.new(|cx| f(Self::new(cx), window, cx))
+    }
+
+    pub fn appearance(mut self, appearance: PopupMenuAppearance) -> Self {
+        self.appearance = Some(appearance);
+        self
     }
 
     /// Set the focus handle of Entity to handle actions.
@@ -690,6 +713,9 @@ impl PopupMenu {
         submenu.update(cx, |view, _| {
             view.parent_menu = Some(parent_menu);
             view.priority = parent_priority + 1;
+            if let Some(appearance) = self.appearance {
+                view.appearance = Some(appearance);
+            }
         });
 
         self.menu_items.push(
@@ -1138,6 +1164,9 @@ impl PopupMenu {
             Size::Small => (px(20.), options.radius.half()),
             _ => (px(26.), options.radius),
         };
+        let item_height = self
+            .appearance
+            .map_or(item_height, |style| style.item_height);
 
         let this = MenuItemElement::new(ix, &group_name)
             .relative()
@@ -1145,6 +1174,11 @@ impl PopupMenu {
             .py_0()
             .px(INNER_PADDING)
             .rounded(radius)
+            .when_some(self.appearance, |this, style| {
+                this.px(style.item_padding_x)
+                    .highlight_colors(style.hover, style.foreground)
+                    .text_color(style.foreground)
+            })
             .items_center()
             .selected(selected)
             .on_hover(cx.listener(move |this, hovered, _, cx| {
@@ -1167,6 +1201,12 @@ impl PopupMenu {
                 .mx_neg_1()
                 .border_b(px(2.))
                 .border_color(cx.theme().border)
+                .when_some(self.appearance, |this, style| {
+                    this.mx(px(4.0))
+                        .my(style.separator_margin)
+                        .border_b(px(1.0))
+                        .border_color(style.border)
+                })
                 .disabled(true),
             PopupMenuItem::Label(label) => this.disabled(true).cursor_default().child(
                 h_flex()
@@ -1354,7 +1394,9 @@ impl Render for PopupMenu {
         let options = RenderOptions {
             has_left_icon,
             check_side: self.check_side,
-            radius: cx.theme().radius.min(px(8.)),
+            radius: self
+                .appearance
+                .map_or(cx.theme().radius.min(px(8.)), |style| style.item_radius),
         };
         let custom_scrollbar = self.scrollable
             && (self.scrollbar_show.is_some() || self.scrollbar_thickness.is_some());
@@ -1380,12 +1422,20 @@ impl Render for PopupMenu {
             .on_mouse_down_out(cx.listener(Self::on_mouse_down_out))
             .popover_style(cx)
             .text_color(cx.theme().popover_foreground)
+            .when_some(self.appearance, |this, style| {
+                this.rounded(style.panel_radius)
+                    .bg(style.background)
+                    .text_color(style.foreground)
+                    .border_color(style.border)
+                    .when(!style.shadow, |this| this.shadow_none())
+            })
             .relative()
             .occlude()
             .child(
                 v_flex()
                     .id("items")
                     .p_1()
+                    .when_some(self.appearance, |this, style| this.p(style.padding))
                     .when_some(self.items_padding_bottom, |this, padding| this.pb(padding))
                     .gap_y_0p5()
                     .min_w(rems(8.))
