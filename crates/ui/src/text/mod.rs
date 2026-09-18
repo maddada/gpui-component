@@ -3,12 +3,15 @@ mod format;
 mod inline;
 mod inline_code;
 mod inline_flow;
-mod inline_prose;
 mod inline_link;
+mod inline_prose;
 pub use inline_link::InlineLink;
 mod markdown_ext;
 mod node;
+/// The fenced block a host's `code_block_actions` draws a header for.
+pub use node::{CodeBlock, Span};
 pub(crate) mod selection;
+mod selection_registry;
 mod state;
 mod style;
 mod text_view;
@@ -17,6 +20,7 @@ mod window_selection;
 
 use gpui::{App, ElementId, IntoElement, RenderOnce, SharedString, Window};
 pub use markdown_ext::*;
+pub(crate) use selection_registry::SelectionRegistry;
 pub use state::*;
 pub use style::*;
 pub use text_view::*;

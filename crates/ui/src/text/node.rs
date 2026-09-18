@@ -20,7 +20,7 @@ use crate::{
     input::{InputEdit, Point, RopeExt as _},
     scroll::horizontal_scroll_area,
     text::{
-        CodeBlockActionsFn, MarkdownExtensions, MarkdownNode,
+        CodeBlockActionsFn, CodeBlockWrapFn, MarkdownExtensions, MarkdownNode,
         document::NodeRenderOptions,
         inline::{Inline, InlineState},
         inline_flow::{InlineFlow, InlineFlowItem},
@@ -625,10 +625,18 @@ impl Paragraph {
     }
 }
 
+/// `p_3` on both sides of an unwrapped block's body.
+const CODE_PAD_PX: f32 = 24.0;
+/// A single line longer than this is measured up to here: past it the scroll is long enough anyway.
+const MAX_MEASURED_CODE_LINE: usize = 4096;
+
 #[derive(Debug, Clone)]
 pub struct CodeBlock {
     lang: Option<SharedString>,
-    styles: Arc<Mutex<Option<Vec<(Range<usize>, HighlightStyle)>>>>,
+    meta: Option<SharedString>,
+    /// The last computed styles together with the theme they were computed
+    /// with, so a dark/light switch repaints a block that is already parsed.
+    styles: Arc<Mutex<Option<(Arc<HighlightTheme>, Vec<(Range<usize>, HighlightStyle)>)>>>,
     highlight_theme: Arc<HighlightTheme>,
     state: Arc<Mutex<InlineState>>,
     pub span: Option<Span>,
@@ -644,6 +652,20 @@ impl CodeBlock {
     /// Get the language of the code block.
     pub fn lang(&self) -> Option<SharedString> {
         self.lang.clone()
+    }
+
+    /// Everything the fence wrote after its language, unparsed.
+    ///
+    /// A host that renders code block actions uses it to name the file a fence
+    /// came from (```ts src/main.ts, ```json title=package.json).
+    pub fn meta(&self) -> Option<SharedString> {
+        self.meta.clone()
+    }
+
+    /// Attach the fence's meta string.
+    pub(crate) fn with_meta(mut self, meta: Option<impl Into<SharedString>>) -> Self {
+        self.meta = meta.map(Into::into);
+        self
     }
 
     /// Get the code content of the code block.
@@ -667,6 +689,7 @@ impl CodeBlock {
 
         Self {
             lang,
+            meta: None,
             styles: Arc::new(Mutex::new(None)),
             highlight_theme: Arc::new(highlight_theme.clone()),
             state,
@@ -674,7 +697,12 @@ impl CodeBlock {
         }
     }
 
-    pub(crate) fn styles(&self) -> Vec<(Range<usize>, HighlightStyle)> {
+    /// The syntax styles for this fence, painted with `theme`.
+    ///
+    /// The palette is resolved here rather than when the document was parsed, so
+    /// a view can hand the block its own theme (`TextViewStyle::highlight_theme`)
+    /// and a later theme switch restyles the block without reparsing it.
+    pub(crate) fn styles(&self, theme: &Arc<HighlightTheme>) -> Vec<(Range<usize>, HighlightStyle)> {
         let Some(lang) = &self.lang else {
             return Vec::new();
         };
@@ -683,7 +711,9 @@ impl CodeBlock {
             return Vec::new();
         };
 
-        if let Some(styles) = styles.as_ref() {
+        if let Some((painted_with, styles)) = styles.as_ref()
+            && painted_with == theme
+        {
             return styles.clone();
         }
 
@@ -714,10 +744,15 @@ impl CodeBlock {
             };
 
             highlighter.update(Some(edit), &code_rope, None);
-            highlighter.styles(&(0..code.len()), &self.highlight_theme)
+            highlighter.styles(&(0..code.len()), theme)
         });
-        *styles = Some(computed_styles.clone());
+        *styles = Some((theme.clone(), computed_styles.clone()));
         computed_styles
+    }
+
+    /// The theme this block was parsed with, used when the view does not name one.
+    pub(crate) fn parsed_highlight_theme(&self) -> &Arc<HighlightTheme> {
+        &self.highlight_theme
     }
 
     pub(super) fn selected_text(&self) -> String {
@@ -754,36 +789,111 @@ impl CodeBlock {
         cx: &mut App,
     ) -> AnyElement {
         let style = &node_cx.style;
+        // With host actions the padding moves inside, so the header they draw
+        // can span the block's full width and rule off from edge to edge.
+        let actions = node_cx.code_block_actions.clone();
+        // Code is structured text: a line broken at the pane's edge stops
+        // lining up with the lines around it. A host that says this block does
+        // not wrap gets the whole line and scrolls to the rest of it, which is
+        // what an editor does and what a reader comparing two lines needs.
+        let wrap = node_cx
+            .code_block_wrap
+            .as_ref()
+            .is_none_or(|wraps| wraps(self));
+        let scroll_handle = (!wrap).then(|| {
+            let key = match self.span {
+                Some(span) => SharedString::from(format!(
+                    "{}-code-scroll-{}:{}",
+                    window.current_view(),
+                    span.start,
+                    span.end
+                )),
+                None => SharedString::from(format!(
+                    "{}-code-scroll-{}",
+                    window.current_view(),
+                    options.ix
+                )),
+            };
+            window
+                .use_keyed_state(key, cx, |_, _| ScrollHandle::default())
+                .read(cx)
+                .clone()
+        });
+        // How far an unwrapped block scrolls: its widest line. A block-level
+        // child would otherwise take exactly the viewport's width and leave the
+        // overflow unreachable, so the width is measured the way a table
+        // measures its columns. Monospace makes the longest line the widest
+        // one, so only that line is shaped.
+        let content_width = (!wrap).then(|| {
+            let mono_font_size = cx.theme().mono_font_size;
+            let mut text_style = window.text_style();
+            text_style.font_family = cx.theme().mono_font_family.clone();
+            let code = self.code();
+            let widest = code
+                .lines()
+                .max_by_key(|line| line.chars().count())
+                .unwrap_or_default();
+            let end = widest
+                .char_indices()
+                .nth(MAX_MEASURED_CODE_LINE)
+                .map_or(widest.len(), |(index, _)| index);
+            let widest = &widest[..end];
+            let run = text_style.to_run(widest.len());
+            let width = window
+                .text_system()
+                .layout_line(widest, mono_font_size, &[run], None)
+                .width;
+            f32::from(width) + if actions.is_some() { CODE_PAD_PX } else { 0.0 }
+        });
+        let body = div()
+            .when(actions.is_some(), |this| this.p_3())
+            .when(!wrap, |this| this.whitespace_nowrap())
+            .when_some(content_width, |this, width| this.min_w_full().w(px(width)))
+            .child(Inline::new(
+                "code",
+                self.state.clone(),
+                vec![],
+                self.styles(
+                    style
+                        .highlight_theme
+                        .as_ref()
+                        .unwrap_or_else(|| self.parsed_highlight_theme()),
+                ),
+            ));
 
         div()
             .when(!options.is_last, |this| this.pb(style.paragraph_gap))
             .child(
                 div()
                     .id(("codeblock", options.ix))
-                    .p_3()
+                    .when(actions.is_none(), |this| this.p_3())
                     .rounded(cx.theme().radius)
                     .bg(cx.theme().tokens.muted)
                     .font_family(cx.theme().mono_font_family.clone())
                     .text_size(cx.theme().mono_font_size)
-                    .relative()
                     .refine_style(&style.code_block)
-                    .child(Inline::new(
-                        "code",
-                        self.state.clone(),
-                        vec![],
-                        self.styles(),
-                    ))
-                    .when_some(node_cx.code_block_actions.clone(), |this, actions| {
+                    // A host's code block actions are a header row above the
+                    // code rather than an overlay on top of it: a block's first
+                    // line carries its most important text, and a file name or
+                    // a language label has nowhere to go floating over it.
+                    .when_some(actions.clone(), |this, actions| {
                         this.child(
                             div()
                                 .id("actions")
-                                .absolute()
-                                .top_2()
-                                .right_2()
-                                .bg(cx.theme().tokens.muted)
-                                .rounded(cx.theme().radius)
-                                .child(actions(&self, window, cx)),
+                                .w_full()
+                                .child(actions(self, window, cx)),
                         )
+                    })
+                    .map(|this| match &scroll_handle {
+                        // The viewport clips and scrolls; the body inside it
+                        // keeps the whole line's width.
+                        Some(scroll_handle) => this.child(horizontal_scroll_area(
+                            ("codeblock-scroll", options.ix),
+                            scroll_handle,
+                            &Default::default(),
+                            body,
+                        )),
+                        None => this.child(body),
                     }),
             )
             .into_any_element()
@@ -800,7 +910,9 @@ pub(crate) struct NodeContext {
     pub(crate) style: TextViewStyle,
     pub(crate) link_presentation: Option<Arc<super::inline_link::LinkPresentationFn>>,
     pub(crate) link_click: Option<Arc<super::LinkClickFn>>,
+    pub(crate) link_secondary_click: Option<Arc<super::LinkClickFn>>,
     pub(crate) code_block_actions: Option<Arc<CodeBlockActionsFn>>,
+    pub(crate) code_block_wrap: Option<Arc<CodeBlockWrapFn>>,
     pub(crate) markdown_extensions: Arc<MarkdownExtensions>,
 }
 
@@ -833,6 +945,12 @@ impl Paragraph {
                 && children
                     .iter()
                     .any(|child| child.marks.iter().any(|(_, mark)| mark.code))
+            // A paragraph that names a colour needs the per-fragment flow, which is what can
+            // reserve the room a swatch is painted in.
+            || node_cx.style.prose_swatch.is_some()
+                && children
+                    .iter()
+                    .any(|child| super::inline_code::has_hex_color(&child.text))
         {
             return InlineFlow::new(
                 span.unwrap_or_default(),
@@ -840,6 +958,7 @@ impl Paragraph {
                 self.flow_states.clone(),
             )
             .with_link_click(node_cx.link_click.clone())
+            .with_link_secondary_click(node_cx.link_secondary_click.clone())
             .with_inline_code(node_cx.style.inline_code.clone(), {
                 let mut offset = 0;
                 let mut ranges = Vec::new();
@@ -853,6 +972,7 @@ impl Paragraph {
                 }
                 ranges
             })
+            .with_prose_swatches(node_cx.style.prose_swatch.clone())
             .with_link_presentation(node_cx.link_presentation.as_deref())
             .into_any_element();
         }
@@ -1361,11 +1481,25 @@ impl BlockNode {
                                         .items_start()
                                         .content_start()
                                         .when(!options.todo && checked.is_none(), |this| {
-                                            this.child(list_item_prefix(
-                                                ix,
-                                                options.ordered,
-                                                options.depth,
-                                            ))
+                                            // The marker sits in a box of its
+                                            // own so a host can give it a fixed
+                                            // gutter and put every item's text
+                                            // on one column; `justify_end` is
+                                            // what pushes the marker against
+                                            // that column, the way CSS's
+                                            // outside marker sits.
+                                            this.child(
+                                                div()
+                                                    .flex()
+                                                    .justify_end()
+                                                    .flex_shrink_0()
+                                                    .refine_style(&node_cx.style.list_marker)
+                                                    .child(list_item_prefix(
+                                                        ix,
+                                                        options.ordered,
+                                                        options.list_depth(),
+                                                    )),
+                                            )
                                         })
                                         .when_some(*checked, |this, checked| {
                                             // Todo list checkbox
@@ -1396,17 +1530,26 @@ impl BlockNode {
                                 );
                             }
                             BlockNode::List { .. } => {
-                                items.push(div().ml(rems(1.)).child(child.render_block(
-                                    NodeRenderOptions {
-                                        depth: options.depth + 1,
-                                        todo: checked.is_some(),
-                                        is_last: true,
-                                        ..options
-                                    },
-                                    node_cx,
-                                    window,
-                                    cx,
-                                )));
+                                // A nested list is a block of its own, so it
+                                // keeps the paragraph gap around it rather than
+                                // sitting tight against the item that opened it.
+                                items.push(
+                                    div()
+                                        .ml(rems(1.))
+                                        .pt(node_cx.style.paragraph_gap)
+                                        .pb(node_cx.style.paragraph_gap)
+                                        .child(child.render_block(
+                                            NodeRenderOptions {
+                                                depth: options.depth + 1,
+                                                todo: checked.is_some(),
+                                                is_last: true,
+                                                ..options
+                                            },
+                                            node_cx,
+                                            window,
+                                            cx,
+                                        )),
+                                );
                             }
                             _ => {}
                         }
@@ -1550,6 +1693,9 @@ impl BlockNode {
                             this.border_r_1().border_color(cx.theme().border)
                         })
                         .refine_style(&style.table_cell)
+                        .when(row_ix == 0, |this| {
+                            this.refine_style(&style.table_head_cell)
+                        })
                         .child(cell.children.render(node_cx, window, cx)),
                 );
             }
@@ -1561,12 +1707,14 @@ impl BlockNode {
                     .border_color(cx.theme().border)
                     .flex()
                     .flex_row()
+                    .refine_style(&style.table_row)
+                    .when(row_ix == 0, |this| this.refine_style(&style.table_head_row))
                     .children(cells),
             );
         }
 
         div()
-            .pb(rems(1.))
+            .when(!options.is_last, |this| this.pb(style.paragraph_gap))
             .w_full()
             .child(
                 // Scroll viewport: clips and scrolls horizontally (overflow-x
@@ -1588,6 +1736,7 @@ impl BlockNode {
                         .border_1()
                         .border_color(cx.theme().border)
                         .rounded(cx.theme().radius)
+                        .refine_style(&style.table_track)
                         .children(rows),
                 ),
             )
@@ -1634,6 +1783,9 @@ impl BlockNode {
                             this.border_r_1().border_color(cx.theme().border)
                         })
                         .refine_style(&style.table_cell)
+                        .when(row_ix == 0, |this| {
+                            this.refine_style(&style.table_head_cell)
+                        })
                         .child(cell.children.render(node_cx, window, cx)),
                 );
             }
@@ -1646,12 +1798,14 @@ impl BlockNode {
                     .border_color(cx.theme().border)
                     .flex()
                     .flex_row()
+                    .refine_style(&style.table_row)
+                    .when(row_ix == 0, |this| this.refine_style(&style.table_head_row))
                     .children(cells),
             );
         }
 
         div()
-            .pb(rems(1.))
+            .when(!options.is_last, |this| this.pb(style.paragraph_gap))
             .w_full()
             .child(
                 div()
@@ -1662,7 +1816,8 @@ impl BlockNode {
                     .rounded(cx.theme().radius)
                     .overflow_hidden()
                     .children(rows)
-                    .refine_style(&style.table),
+                    .refine_style(&style.table)
+                    .refine_style(&style.table_track),
             )
             .into_any_element()
     }
@@ -1719,6 +1874,10 @@ impl BlockNode {
                     .font_weight(font_weight)
                     .refine_style(&node_cx.style.heading)
                     .when(options.is_last, |this| this.pb(px(0.0)))
+                    // Nothing above the first block to be louder than, so the
+                    // heading's extra room above is dropped there (CSS's
+                    // `> :first-child { margin-top: 0 }`).
+                    .when(options.ix == 0, |this| this.pt(px(0.0)))
                     .child(children.render(node_cx, window, cx))
                     .into_any_element()
             }
@@ -1747,6 +1906,7 @@ impl BlockNode {
             } => v_flex()
                 .id((if *ordered { "ol" } else { "ul" }, ix))
                 .pb(mb)
+                .refine_style(&node_cx.style.list)
                 .children({
                     let mut items = Vec::with_capacity(children.len());
                     let mut item_index = 0;
@@ -1759,6 +1919,8 @@ impl BlockNode {
                             NodeRenderOptions {
                                 ix,
                                 ordered: *ordered,
+                                bulleted_depth: options.bulleted_depth + usize::from(!*ordered),
+                                numbered_depth: options.numbered_depth + usize::from(*ordered),
                                 ..options
                             },
                             node_cx,
@@ -1841,7 +2003,7 @@ mod tests {
             &theme,
             None::<Span>,
         );
-        _ = unknown_block.styles();
+        _ = unknown_block.styles(&theme);
 
         let cached_language = CODE_BLOCK_HIGHLIGHTERS.with(|cache| {
             cache
@@ -1873,7 +2035,7 @@ mod tests {
             &theme,
             None::<Span>,
         );
-        _ = registered_block.styles();
+        _ = registered_block.styles(&theme);
 
         let cached_language = CODE_BLOCK_HIGHLIGHTERS.with(|cache| {
             cache

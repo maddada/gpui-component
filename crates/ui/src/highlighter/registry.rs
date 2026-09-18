@@ -281,7 +281,10 @@ impl SyntaxColors {
             "title" => self.title,
             "type" => self.type_,
             "variable" => self.variable,
-            "variable.special" => self.variable_special,
+            // Zed themes name the language's own `self`/`this`/`_` names
+            // `variable.special`; the bundled tree-sitter queries capture them
+            // as `variable.builtin`, so the two spellings mean the same thing.
+            "variable.special" | "variable.builtin" => self.variable_special,
             "variant" => self.variant,
             _ => None,
         }

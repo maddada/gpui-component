@@ -15,6 +15,18 @@ pub struct InlineCodeStyle {
     pub radius: Pixels,
     pub background: Hsla,
     pub border_color: Hsla,
+    /// Draw a small square of the colour a span names (`#1d4ed8`, `#fff`)
+    /// before its text.
+    pub swatches: bool,
+    /// The colour this particular span named, filled in while laying it out.
+    pub swatch: Option<Hsla>,
+    /// Ring around the swatch, kept apart from the span's own border so a
+    /// colour named in running text can carry the ring without a code chip.
+    pub swatch_border_width: Pixels,
+    pub swatch_border_color: Hsla,
+    /// True when the span is ordinary prose that merely names a colour: it
+    /// keeps the paragraph's own typeface instead of the code one.
+    pub prose: bool,
 }
 
 /// TextViewStyle used to customize the style for [`TextView`].
@@ -31,11 +43,19 @@ pub struct TextViewStyle {
     pub heading_font_size: Option<Arc<dyn Fn(u8, Pixels) -> Pixels + Send + Sync + 'static>>,
     /// Additional typography and spacing applied to headings.
     pub heading: StyleRefinement,
-    /// Highlight theme for code blocks. Default: [`HighlightTheme::default_light()`]
-    pub highlight_theme: Arc<HighlightTheme>,
+    /// Highlight theme for code blocks, applied when the document is rendered.
+    ///
+    /// `None` keeps the theme the document was parsed with, which is the
+    /// application theme's `highlight_theme`. Set it to paint fenced blocks with
+    /// a palette of your own: unlike the parse-time theme it follows a later
+    /// dark/light switch, because the styles are resolved during render.
+    pub highlight_theme: Option<Arc<HighlightTheme>>,
     /// The style refinement for code blocks.
     pub code_block: StyleRefinement,
     pub inline_code: Option<InlineCodeStyle>,
+    /// Draw a swatch before every hex colour written in running text, the way
+    /// `inline_code` draws one inside a code span. Set `prose` on it.
+    pub prose_swatch: Option<InlineCodeStyle>,
     /// Style refinement applied to the table container (the bordered wrapper).
     ///
     /// Set `overflow_x: scroll` here to keep table cells on a single line and
@@ -44,6 +64,25 @@ pub struct TextViewStyle {
     pub table: StyleRefinement,
     /// Style refinement applied to each table cell.
     pub table_cell: StyleRefinement,
+    /// Style refinement applied to the bordered box that holds the rows.
+    ///
+    /// In scroll mode this is the track inside the scroll viewport, so it is
+    /// the only way to reach the frame a table is drawn in.
+    pub table_track: StyleRefinement,
+    /// Style refinement applied to every row, after the default row rule.
+    pub table_row: StyleRefinement,
+    /// Style refinement applied to the header row, after `table_row`.
+    pub table_head_row: StyleRefinement,
+    /// Style refinement applied to a header cell, after `table_cell`.
+    pub table_head_cell: StyleRefinement,
+    /// Style refinement applied to a list, where its indent and item spacing live.
+    pub list: StyleRefinement,
+    /// Style refinement applied to the box a list item's marker sits in.
+    ///
+    /// Give it a minimum width to get CSS's `list-style-position: outside`
+    /// gutter: the marker is pushed to the gutter's right edge and every item's
+    /// text starts on one column.
+    pub list_marker: StyleRefinement,
     pub is_dark: bool,
 }
 
@@ -64,11 +103,18 @@ impl Default for TextViewStyle {
             heading_base_font_size: px(14.),
             heading_font_size: None,
             heading: StyleRefinement::default(),
-            highlight_theme: HighlightTheme::default_light().clone(),
+            highlight_theme: None,
             code_block: StyleRefinement::default(),
             inline_code: None,
+            prose_swatch: None,
             table: StyleRefinement::default(),
             table_cell: StyleRefinement::default(),
+            table_track: StyleRefinement::default(),
+            table_row: StyleRefinement::default(),
+            table_head_row: StyleRefinement::default(),
+            table_head_cell: StyleRefinement::default(),
+            list: StyleRefinement::default(),
+            list_marker: StyleRefinement::default(),
             is_dark: false,
         }
     }

@@ -19,10 +19,28 @@ pub(crate) struct NodeRenderOptions {
     pub(crate) todo: bool,
     pub(crate) ordered: bool,
     pub(crate) depth: usize,
+    /// How many bulleted lists this item is inside, itself included.
+    ///
+    /// Counted per kind rather than from `depth`, because that is what picks the marker: a
+    /// bulleted list directly inside a numbered one is a first-level bulleted list and takes the
+    /// first bullet, exactly as CSS's `ul ul` selector decides it.
+    pub(crate) bulleted_depth: usize,
+    /// How many numbered lists this item is inside, itself included.
+    pub(crate) numbered_depth: usize,
     pub(crate) is_last: bool,
 }
 
 impl NodeRenderOptions {
+    /// The nesting level the marker of a list of this kind is chosen from.
+    pub(crate) fn list_depth(&self) -> usize {
+        if self.ordered {
+            self.numbered_depth
+        } else {
+            self.bulleted_depth
+        }
+        .saturating_sub(1)
+    }
+
     pub(crate) fn is_last(mut self, is_last: bool) -> Self {
         self.is_last = is_last;
         self

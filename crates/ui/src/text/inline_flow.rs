@@ -27,6 +27,7 @@ pub(super) struct InlineFlow {
     id: ElementId,
     items: Vec<InlineFlowItem>,
     link_click: Option<Arc<super::LinkClickFn>>,
+    link_secondary_click: Option<Arc<super::LinkClickFn>>,
     selection_states: Arc<Mutex<Vec<Arc<Mutex<InlineState>>>>>,
 }
 
@@ -123,12 +124,24 @@ impl InlineFlow {
             id: id.into(),
             items,
             link_click: None,
+            link_secondary_click: None,
             selection_states,
         }
     }
 
     pub(super) fn with_link_click(mut self, handler: Option<Arc<super::LinkClickFn>>) -> Self {
         self.link_click = handler;
+        self
+    }
+
+    /// A secondary (right) press on a decorated reference. The plain-link path
+    /// answers one from [`Inline`], but a reference the host draws itself keeps
+    /// its own element, so it needs the handler here as well.
+    pub(super) fn with_link_secondary_click(
+        mut self,
+        handler: Option<Arc<super::LinkClickFn>>,
+    ) -> Self {
+        self.link_secondary_click = handler;
         self
     }
 
@@ -149,6 +162,15 @@ impl InlineFlow {
     ) -> Self {
         if let Some(style) = style {
             self.items = inline_code::split_items(self.items, &ranges, &style);
+        }
+        self
+    }
+
+    /// Runs after `with_inline_code`, so a colour already inside a code span keeps that span's
+    /// swatch and is not split a second time.
+    pub(super) fn with_prose_swatches(mut self, style: Option<InlineCodeStyle>) -> Self {
+        if let Some(style) = style {
+            self.items = inline_code::split_prose_swatches(self.items, &style);
         }
         self
     }
@@ -349,6 +371,7 @@ impl Element for InlineFlow {
                             fragment_size,
                             elements.len(),
                             self.link_click.clone(),
+                            self.link_secondary_click.clone(),
                         )
                     } else if let InlineFlowItem::Text {
                         code: Some(code),
@@ -549,8 +572,19 @@ fn layout_flow(
                                     + usize::from(local_end == text.len()))
                                     as f32
                         });
+                        // A swatch is painted in the same leading edge `inline_code::element` pads
+                        // for, so the fragment's advance has to carry it: a chip measured without
+                        // it is laid out narrower than it paints and swallows the next word's
+                        // first character.
+                        let swatch = code
+                            .as_ref()
+                            .filter(|_| local_start == 0)
+                            .map_or(px(0.0), |code| {
+                                inline_code::leading_space(code, text_style, window)
+                            });
                         let width = shaped_line.width()
                             + padding
+                            + swatch
                             + reference
                                 .as_ref()
                                 .map_or(px(0.0), |reference| reference.icon_size + reference.gap);

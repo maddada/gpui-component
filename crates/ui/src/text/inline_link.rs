@@ -9,7 +9,7 @@ use super::{
 use crate::{WindowExt as _, tooltip::Tooltip};
 use gpui::{
     AnyElement, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, SharedString, Size,
-    StatefulInteractiveElement, Styled, div, px, svg,
+    StatefulInteractiveElement, Styled, div, prelude::FluentBuilder as _, px, svg,
 };
 
 /// Host-provided presentation for an indivisible inline reference.
@@ -111,9 +111,11 @@ pub(super) fn element(
     size: Size<Pixels>,
     id: usize,
     handler: Option<Arc<super::LinkClickFn>>,
+    secondary: Option<Arc<super::LinkClickFn>>,
 ) -> AnyElement {
     let title = reference.title.clone();
     let url = link.url.clone();
+    let secondary_url = link.url.clone();
     div()
         .id(("inline-link", id))
         .tab_index(0)
@@ -151,6 +153,15 @@ pub(super) fn element(
             } else {
                 cx.open_url(&url);
             }
+        })
+        // The host's menu opens on the press, the way every other context menu
+        // in a desktop app does, and before the release can start a selection.
+        .when_some(secondary, |this, secondary| {
+            this.on_mouse_down(gpui::MouseButton::Right, move |event, window, cx| {
+                window.end_text_selection(cx);
+                cx.stop_propagation();
+                secondary(&secondary_url, event.modifiers, window, cx);
+            })
         })
         .into_any_element()
 }

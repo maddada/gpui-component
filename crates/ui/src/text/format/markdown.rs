@@ -399,12 +399,15 @@ fn ast_to_node(
             html: false,
             span: new_span(val.position, cx),
         },
-        Node::Code(raw) => BlockNode::CodeBlock(CodeBlock::new(
-            raw.value.into(),
-            raw.lang.map(|s| s.into()),
-            highlight_theme,
-            new_span(raw.position, cx),
-        )),
+        Node::Code(raw) => BlockNode::CodeBlock(
+            CodeBlock::new(
+                raw.value.into(),
+                raw.lang.map(|s| s.into()),
+                highlight_theme,
+                new_span(raw.position, cx),
+            )
+            .with_meta(raw.meta),
+        ),
         Node::Heading(val) => {
             let mut paragraph = Paragraph::default();
             val.children.iter().for_each(|c| {

@@ -3,7 +3,7 @@ use std::{pin::Pin, sync::Arc, task::Poll};
 
 use gpui::{
     App, AppContext as _, Bounds, Context, FocusHandle, IntoElement, KeyBinding, ListState,
-    ParentElement as _, Pixels, Point, Render, SharedString, Styled as _, Task, Window,
+    ParentElement as _, Pixels, Render, SharedString, Styled as _, Task, Window,
     prelude::FluentBuilder as _, px,
 };
 
@@ -14,7 +14,7 @@ use crate::{
     input::{self, SelectAll},
     scroll::AutoScroll,
     text::{
-        CodeBlockActionsFn, MarkdownExtensions, TextViewStyle,
+        CodeBlockActionsFn, CodeBlockWrapFn, MarkdownExtensions, TextViewStyle,
         document::ParsedDocument,
         format,
         node::{self, NodeContext},
@@ -62,12 +62,12 @@ pub struct TextViewState {
     pub(super) text_view_style: TextViewStyle,
     pub(super) link_presentation: Option<Arc<super::inline_link::LinkPresentationFn>>,
     pub(super) link_click: Option<Arc<super::LinkClickFn>>,
+    pub(super) link_secondary_click: Option<Arc<super::LinkClickFn>>,
     pub(super) code_block_actions: Option<std::sync::Arc<CodeBlockActionsFn>>,
+    pub(super) code_block_wrap: Option<std::sync::Arc<CodeBlockWrapFn>>,
     pub(super) markdown_extensions: Arc<MarkdownExtensions>,
 
     pub(super) is_selecting: bool,
-    multi_click_selection: Option<TextViewMultiClickSelection>,
-    selected_text_override: Option<String>,
     select_all: bool,
     pub(super) auto_scroll: AutoScroll,
 
@@ -136,8 +136,6 @@ impl TextViewState {
             focus_handle,
             entity_id,
             bounds: Bounds::default(),
-            multi_click_selection: None,
-            selected_text_override: None,
             select_all: false,
             selectable: false,
             scrollable: false,
@@ -148,7 +146,9 @@ impl TextViewState {
             list_state: ListState::new(0, gpui::ListAlignment::Top, px(1000.)).measure_all(),
             text_view_style: TextViewStyle::default(),
             code_block_actions: None,
+            code_block_wrap: None,
             link_click: None,
+            link_secondary_click: None,
             link_presentation: None,
             markdown_extensions: Arc::default(),
             is_selecting: false,
@@ -241,10 +241,6 @@ impl TextViewState {
             return self.parsed_content.document.text();
         }
 
-        if let Some(text) = &self.selected_text_override {
-            return text.clone();
-        }
-
         self.parsed_content.document.selected_text()
     }
 
@@ -299,12 +295,10 @@ impl TextViewState {
         self.bounds
     }
 
-    /// Whether this view has a view-local selection (select-all, multi-click, or override),
-    /// independent of the window-level selection.
+    /// Whether this view has a view-local selection (select-all), independent
+    /// of the window-level selection.
     pub(super) fn has_view_selection(&self) -> bool {
         self.select_all
-            || self.multi_click_selection.is_some()
-            || self.selected_text_override.is_some()
     }
 
     pub(super) fn stop_auto_scroll(&mut self) {
@@ -312,8 +306,6 @@ impl TextViewState {
     }
 
     fn reset_selection(&mut self) {
-        self.multi_click_selection = None;
-        self.selected_text_override = None;
         self.select_all = false;
         self.is_selecting = false;
         self.auto_scroll.stop();
@@ -329,37 +321,12 @@ impl TextViewState {
         cx.notify();
     }
 
-    pub(super) fn scroll_offset(&self) -> Point<Pixels> {
-        if self.scrollable {
-            self.list_state.scroll_px_offset_for_scrollbar()
-        } else {
-            Point::default()
-        }
-    }
-
     /// Select all rendered text in this view.
     pub fn select_all(&mut self, cx: &mut Context<Self>) {
-        self.multi_click_selection = None;
-        self.selected_text_override = None;
         self.select_all = true;
         self.is_selecting = false;
         self.auto_scroll.stop();
         cx.notify();
-    }
-
-    pub(crate) fn set_multi_click_selection(
-        &mut self,
-        pos: Point<Pixels>,
-        kind: TextViewMultiClickKind,
-        selected_text: String,
-    ) {
-        let scroll_offset = self.scroll_offset();
-        let pos = pos - self.bounds.origin - scroll_offset;
-        self.multi_click_selection = Some(TextViewMultiClickSelection { pos, kind });
-        self.selected_text_override = Some(selected_text);
-        self.select_all = false;
-        self.is_selecting = false;
-        self.auto_scroll.stop();
     }
 
     pub(super) fn set_auto_scroll(&mut self, delta: Option<Pixels>, cx: &mut Context<Self>) {
@@ -369,32 +336,13 @@ impl TextViewState {
         });
     }
 
-    /// Return the window selection (anchor, cursor) in window coordinates if
-    /// this view participates in it.
-    ///
-    /// Single-view fast path: when both endpoints are anchored inside one
-    /// TextView, only that view participates (identical to the previous
-    /// per-view behavior).
-    pub(crate) fn selection_points(
-        &self,
-        window: &Window,
-        cx: &App,
-    ) -> Option<(Point<Pixels>, Point<Pixels>)> {
-        if !self.selectable {
-            return None;
-        }
-        let root = window.root::<crate::Root>().flatten()?;
-        let selection = &root.read(cx).text_selection;
-        if let Some(view_id) = selection.single_view() {
-            if view_id != self.entity_id {
-                return None;
-            }
-        }
-        selection.resolved_points(cx)
-    }
-
     pub(crate) fn has_selection(&self, window: &Window, cx: &App) -> bool {
-        self.has_view_selection() || self.selection_points(window, cx).is_some()
+        self.has_view_selection()
+            || (self.selectable
+                && window
+                    .root::<crate::Root>()
+                    .flatten()
+                    .is_some_and(|root| root.read(cx).text_selection.contains_view(self.entity_id)))
     }
 
     pub(super) fn on_action_select_all(
@@ -418,26 +366,6 @@ impl TextViewState {
     pub(crate) fn is_all_selected(&self) -> bool {
         self.select_all
     }
-
-    pub(crate) fn multi_click_selection(&self) -> Option<TextViewMultiClickSelection> {
-        let scroll_offset = self.scroll_offset();
-        self.multi_click_selection.map(|selection| {
-            let pos = selection.pos + scroll_offset + self.bounds.origin;
-            TextViewMultiClickSelection { pos, ..selection }
-        })
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct TextViewMultiClickSelection {
-    pub(crate) pos: Point<Pixels>,
-    pub(crate) kind: TextViewMultiClickKind,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TextViewMultiClickKind {
-    Word,
-    Paragraph,
 }
 
 impl Render for TextViewState {
@@ -447,7 +375,9 @@ impl Render for TextViewState {
         let mut node_cx = self.parsed_content.node_cx.clone();
 
         node_cx.code_block_actions = self.code_block_actions.clone();
+        node_cx.code_block_wrap = self.code_block_wrap.clone();
         node_cx.link_click = self.link_click.clone();
+        node_cx.link_secondary_click = self.link_secondary_click.clone();
         node_cx.link_presentation = self.link_presentation.clone();
         node_cx.markdown_extensions = self.markdown_extensions.clone();
         node_cx.style = self.text_view_style.clone();
@@ -472,19 +402,12 @@ impl Render for TextViewState {
                         .child(err.to_string()),
                 ),
             })
-            .on_prepaint(move |bounds, window, cx| {
-                let size_changed = state.read(cx).bounds().size != bounds.size;
-                let id = state.entity_id();
+            // The window selection is anchored to byte offsets in painted
+            // runs, so a resize (window width, streamed growth) keeps it.
+            .on_prepaint(move |bounds, _, cx| {
                 state.update(cx, |state, _| {
                     state.update_bounds(bounds);
                 });
-                if size_changed {
-                    if let Some(root) = window.root::<crate::Root>().flatten() {
-                        root.update(cx, |root, cx| {
-                            root.clear_text_selection_for_resized_view(id, cx);
-                        });
-                    }
-                }
             })
     }
 }

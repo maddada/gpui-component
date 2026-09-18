@@ -3,8 +3,8 @@ use std::sync::Arc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, Bounds, Element, ElementId, Entity, GlobalElementId, Hitbox, HitboxBehavior,
-    InspectorElementId, InteractiveElement, IntoElement, LayoutId, ParentElement, Pixels,
-    SharedString, StyleRefinement, Styled, Window, div,
+    InspectorElementId, InteractiveElement, IntoElement, LayoutId, MouseButton, MouseDownEvent,
+    ParentElement, Pixels, SharedString, StyleRefinement, Styled, Window, div,
 };
 
 use crate::StyledExt;
@@ -18,6 +18,9 @@ use crate::{global_state::GlobalState, text::TextViewStyle};
 /// Type for code block actions generator function.
 pub(crate) type CodeBlockActionsFn =
     dyn Fn(&CodeBlock, &mut Window, &mut App) -> AnyElement + Send + Sync;
+
+/// Type for the per-block decision of whether a fenced block soft-wraps.
+pub(crate) type CodeBlockWrapFn = dyn Fn(&CodeBlock) -> bool + Send + Sync;
 
 pub(crate) type LinkClickFn = dyn Fn(&str, gpui::Modifiers, &mut Window, &mut App) + Send + Sync;
 
@@ -48,7 +51,9 @@ pub struct TextView {
     selectable: bool,
     scrollable: bool,
     code_block_actions: Option<Arc<CodeBlockActionsFn>>,
+    code_block_wrap: Option<Arc<CodeBlockWrapFn>>,
     link_click: Option<Arc<LinkClickFn>>,
+    link_secondary_click: Option<Arc<LinkClickFn>>,
     link_presentation: Option<Arc<super::inline_link::LinkPresentationFn>>,
     markdown_extensions: Arc<MarkdownExtensions>,
 }
@@ -89,7 +94,9 @@ impl TextView {
             selectable: false,
             scrollable: false,
             code_block_actions: None,
+            code_block_wrap: None,
             link_click: None,
+            link_secondary_click: None,
             link_presentation: None,
             markdown_extensions: Arc::default(),
         }
@@ -107,7 +114,9 @@ impl TextView {
             selectable: false,
             scrollable: false,
             code_block_actions: None,
+            code_block_wrap: None,
             link_click: None,
+            link_secondary_click: None,
             link_presentation: None,
             markdown_extensions: Arc::default(),
         }
@@ -125,7 +134,9 @@ impl TextView {
             selectable: false,
             scrollable: false,
             code_block_actions: None,
+            code_block_wrap: None,
             link_click: None,
+            link_secondary_click: None,
             link_presentation: None,
             markdown_extensions: Arc::default(),
         }
@@ -169,6 +180,16 @@ impl TextView {
         self
     }
 
+    /// Let the host answer a secondary (right) press on a link, for example with a context menu.
+    /// The press position is `window.mouse_position()` while the handler runs.
+    pub fn on_link_secondary_click(
+        mut self,
+        handler: impl Fn(&str, gpui::Modifiers, &mut Window, &mut App) + Send + Sync + 'static,
+    ) -> Self {
+        self.link_secondary_click = Some(Arc::new(handler));
+        self
+    }
+
     /// Customize inline link labels and icons without changing host click routing.
     pub fn link_presentation(
         mut self,
@@ -190,6 +211,19 @@ impl TextView {
         self.code_block_actions = Some(Arc::new(move |code_block, window, cx| {
             f(&code_block, window, cx).into_any_element()
         }));
+        self
+    }
+
+    /// Decide per fenced block whether its lines soft-wrap.
+    ///
+    /// Without this every block wraps, which is what a reader of prose-shaped
+    /// output wants. A host that offers a wrap control answers `false` for the
+    /// blocks the reader turned it off for, and those scroll sideways instead.
+    pub fn code_block_wrap<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&CodeBlock) -> bool + Send + Sync + 'static,
+    {
+        self.code_block_wrap = Some(Arc::new(f));
         self
     }
 
@@ -306,7 +340,9 @@ impl Element for TextView {
 
         state.update(cx, |state, cx| {
             state.code_block_actions = self.code_block_actions.clone();
+            state.code_block_wrap = self.code_block_wrap.clone();
             state.link_click = self.link_click.clone();
+            state.link_secondary_click = self.link_secondary_click.clone();
             state.link_presentation = self.link_presentation.clone();
             state.set_markdown_extensions(self.markdown_extensions.clone(), cx);
             state.selectable = self.selectable;
@@ -373,6 +409,28 @@ impl Element for TextView {
             // Register before painting children so this frame's Inline paint can
             // repopulate the text bounds after stale ones are cleared.
             crate::Root::register_selectable_text_view(state, hitbox, window, cx);
+
+            // CDXC:SessionChat 2026-09-19 WHY:
+            // The window-level selection controller only sees a press that bubbles all the way to the root, and hosts routinely stop mouse-down propagation on a pane to claim focus (Ghostex's companion pane does), which made every TextView inside such a pane unselectable. A press on the view therefore starts the selection here, below any host container; the controller still owns blank-space presses, the drag, and the release.
+            window.on_mouse_event({
+                let hitbox = hitbox.clone();
+                move |event: &MouseDownEvent, phase, window, cx| {
+                    if !phase.bubble()
+                        || event.button != MouseButton::Left
+                        || !hitbox.is_hovered(window)
+                    {
+                        return;
+                    }
+                    crate::Root::update(window, cx, |root, window, cx| {
+                        root.start_text_selection_once(
+                            event.position,
+                            event.click_count,
+                            window,
+                            cx,
+                        );
+                    });
+                }
+            });
         }
 
         GlobalState::global_mut(cx)
@@ -468,11 +526,11 @@ mod tests {
 
         let inline_bounds = cx.update(|window, cx| {
             crate::Root::read(window, cx)
-                .selectable_text_inlines
-                .values()
-                .next()
-                .cloned()
-                .unwrap_or_default()
+                .text_registry
+                .entries()
+                .iter()
+                .map(|entry| entry.layout.bounds())
+                .collect::<Vec<_>>()
         });
 
         assert_eq!(inline_bounds.len(), 2);
@@ -544,8 +602,13 @@ mod tests {
     #[gpui::test]
     fn double_click_selects_word(cx: &mut TestAppContext) {
         cx.update(crate::init);
-        let (view, cx) =
-            cx.add_window_view(|_, cx| TextViewTestRoot::new("quick select value", cx));
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            let content = cx.new(|cx| TextViewTestRoot::new("quick select value", cx));
+            crate::Root::new(content, window, cx)
+        });
+        let view = root.read_with(cx, |root, _| {
+            root.view().clone().downcast::<TextViewTestRoot>().unwrap()
+        });
 
         let cx: &mut VisualTestContext = cx;
         cx.run_until_parked();
@@ -577,8 +640,13 @@ mod tests {
     #[gpui::test]
     fn triple_click_selects_paragraph(cx: &mut TestAppContext) {
         cx.update(crate::init);
-        let (view, cx) =
-            cx.add_window_view(|_, cx| TextViewTestRoot::new("quick select value", cx));
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            let content = cx.new(|cx| TextViewTestRoot::new("quick select value", cx));
+            crate::Root::new(content, window, cx)
+        });
+        let view = root.read_with(cx, |root, _| {
+            root.view().clone().downcast::<TextViewTestRoot>().unwrap()
+        });
 
         let cx: &mut VisualTestContext = cx;
         cx.run_until_parked();

@@ -92,6 +92,17 @@ pub(crate) fn word_range_at(text: &str, offset: usize) -> Option<Range<usize>> {
     ))
 }
 
+/// The logical line (between hard newlines) containing `offset`, for a triple
+/// click: a whole paragraph in prose, one line in a code block.
+pub(crate) fn line_range_at(text: &str, offset: usize) -> Range<usize> {
+    let offset = super::selection_registry::clamp_boundary(text, offset);
+    let start = text[..offset].rfind('\n').map_or(0, |newline| newline + 1);
+    let end = text[offset..]
+        .find('\n')
+        .map_or(text.len(), |newline| offset + newline);
+    start..end
+}
+
 fn clip_offset(text: &str, offset: usize) -> usize {
     let offset = offset.min(text.len());
     if offset == text.len() {
