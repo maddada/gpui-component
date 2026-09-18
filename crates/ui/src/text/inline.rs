@@ -507,7 +507,7 @@ impl Element for Inline {
                 let text_view_state = GlobalState::global(cx).text_view_state().cloned();
 
                 move |event: &MouseUpEvent, phase, window, cx| {
-                    if !phase.bubble() || !hitbox.is_hovered(window) {
+                    if event.button != gpui::MouseButton::Left || !phase.bubble() || !hitbox.is_hovered(window) {
                         return;
                     }
                     if text_view_state
@@ -522,7 +522,9 @@ impl Element for Inline {
                     {
                         window.end_text_selection(cx);
                         cx.stop_propagation();
-                        cx.open_url(&link.url);
+                        let handler = text_view_state.as_ref().and_then(|state| state.read(cx).link_click.clone());
+                        if let Some(handler) = handler { handler(&link.url, event.modifiers, window, cx); }
+                        else { cx.open_url(&link.url); }
                     }
                 }
             });

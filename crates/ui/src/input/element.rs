@@ -7,8 +7,8 @@ use gpui::{
 use gpui::{
     HighlightStyle, Hitbox, HitboxBehavior, Hsla, InteractiveElement, IntoElement, LayoutId,
     MouseButton, MouseMoveEvent, MouseUpEvent, Path, Pixels, Point, Position, ShapedLine,
-    SharedString, Size, Style, Styled as _, TextAlign, TextRun, TextStyle, UnderlineStyle, Window,
-    fill, point, px, relative, size,
+    SharedString, Size, Style, Styled as _, TextAlign, TextRun, TextStyle, TransformationMatrix,
+    UnderlineStyle, Window, fill, point, px, relative, size,
 };
 use ropey::Rope;
 use smallvec::SmallVec;
@@ -361,11 +361,9 @@ impl TextElement {
         let cursor_row = state.text.offset_to_point(cursor).row;
         let sel_start_row = state.text.offset_to_point(selected_range.start).row;
         let sel_end_row = state.text.offset_to_point(selected_range.end).row;
-        if state.masked {
-            selected_range.start = masked_display_offset(&state.text, selected_range.start);
-            selected_range.end = masked_display_offset(&state.text, selected_range.end);
-            cursor = masked_display_offset(&state.text, cursor);
-        }
+        selected_range.start = state.display_offset(selected_range.start);
+        selected_range.end = state.display_offset(selected_range.end);
+        cursor = state.display_offset(cursor);
 
         let mut scroll_offset = state.scroll_handle.offset();
 
@@ -744,10 +742,8 @@ impl TextElement {
             return None;
         }
 
-        if state.masked {
-            selected_range.start = masked_display_offset(&state.text, selected_range.start);
-            selected_range.end = masked_display_offset(&state.text, selected_range.end);
-        }
+        selected_range.start = state.display_offset(selected_range.start);
+        selected_range.end = state.display_offset(selected_range.end);
 
         let (start_ix, end_ix) = if selected_range.start < selected_range.end {
             (selected_range.start, selected_range.end)
@@ -1510,12 +1506,16 @@ impl Element for TextElement {
 
         self.state.update(cx, |state, cx| {
             state.display_map.set_font(font, text_size, cx);
-            state.display_map.ensure_text_prepared(&state.text, cx);
+            let projected = state.display_text().clone();
+            state.display_map.ensure_text_prepared(&projected, cx);
         });
 
         let state = self.state.read(cx);
         let multi_line = state.mode.is_multi_line();
         let text = state.text.clone();
+        // The buffer text after its inline replacements: everything below lays out, hit tests, and
+        // paints in this coordinate space, and equals `text` whenever no replacement is set.
+        let projected = state.display_text().clone();
         let is_empty = text.len() == 0;
         let placeholder = self.placeholder.clone();
 
@@ -1526,7 +1526,7 @@ impl Element for TextElement {
         let (display_text, text_color) = if is_empty {
             (
                 &Rope::from(placeholder.as_str()),
-                dim(cx.theme().muted_foreground),
+                dim(state.placeholder_color.unwrap_or(cx.theme().muted_foreground)),
             )
         } else if state.masked {
             (
@@ -1534,7 +1534,7 @@ impl Element for TextElement {
                 fg,
             )
         } else {
-            (&text, fg)
+            (&projected, fg)
         };
 
         // Calculate the width of the line numbers
@@ -1565,10 +1565,8 @@ impl Element for TextElement {
 
         let (visible_range, visible_buffer_lines, visible_top) =
             self.calculate_visible_range(&state, line_height, bounds.size.height);
-        let visible_start_offset = state.text.line_start_offset(visible_range.start);
-        let visible_end_offset = state
-            .text
-            .line_end_offset(visible_range.end.saturating_sub(1));
+        let visible_start_offset = projected.line_start_offset(visible_range.start);
+        let visible_end_offset = projected.line_end_offset(visible_range.end.saturating_sub(1));
 
         let highlight_styles = self.highlight_lines(
             &visible_buffer_lines,
@@ -1581,7 +1579,7 @@ impl Element for TextElement {
 
         let visible_line_byte_offsets: Vec<usize> = visible_buffer_lines
             .iter()
-            .map(|&bl| state.text.line_start_offset(bl))
+            .map(|&bl| projected.line_start_offset(bl))
             .collect();
 
         // For password input (masked: true), convert byte offsets to masked display byte offsets so that
@@ -1637,7 +1635,7 @@ impl Element for TextElement {
             strikethrough: None,
         };
 
-        let runs = if !is_empty {
+        let runs = if !is_empty && state.inline_projection.is_empty() {
             if let Some(highlight_styles) = highlight_styles {
                 let mut runs = Vec::with_capacity(highlight_styles.len());
 
@@ -1664,6 +1662,18 @@ impl Element for TextElement {
             } else {
                 vec![run]
             }
+        } else if !is_empty {
+            inline_replacement_runs(
+                state,
+                last_layout
+                    .visible_line_byte_offsets
+                    .first()
+                    .copied()
+                    .unwrap_or(0),
+                display_text.len(),
+                &run,
+                disabled,
+            )
         } else if let Some(ime_marked_range) = &state.ime_marked_range {
             // IME marked text
             vec![
@@ -1712,7 +1722,7 @@ impl Element for TextElement {
         // 2. Multi-line with soft wrap disabled.
         if state.mode.is_single_line() || !state.soft_wrap {
             let longest_row = state.display_map.longest_row();
-            let longest_line: SharedString = state.text.slice_line(longest_row).to_string().into();
+            let longest_line: SharedString = projected.slice_line(longest_row).to_string().into();
             longest_line_width = window
                 .text_system()
                 .shape_line(
@@ -2051,11 +2061,35 @@ impl Element for TextElement {
         // Track the y-position of the cursor row for positioning the first line suffix
         let mut cursor_row_y = None;
 
-        for (line, &buffer_line) in prepaint
+        // Icons of the inline replacements, resolved before the loop so the state borrow ends
+        // before the lines take `cx` to paint.
+        let reference_icons: Vec<(usize, SharedString, Hsla, Pixels, Pixels)> = {
+            let state = self.state.read(cx);
+            state
+                .inline_projection
+                .spans()
+                .iter()
+                .filter_map(|span| {
+                    let replacement = &span.replacement;
+                    let icon = replacement.icon.clone()?;
+                    let color = replacement.color.unwrap_or(cx.theme().foreground);
+                    Some((
+                        span.display.start,
+                        icon,
+                        if disabled { color.opacity(0.5) } else { color },
+                        replacement.icon_size,
+                        replacement.icon_inset,
+                    ))
+                })
+                .collect()
+        };
+
+        for (vi, (line, &buffer_line)) in prepaint
             .last_layout
             .lines
             .iter()
             .zip(prepaint.last_layout.visible_buffer_lines.iter())
+            .enumerate()
         {
             let row = buffer_line;
             let line_y = origin.y + offset_y;
@@ -2073,6 +2107,38 @@ impl Element for TextElement {
                 window,
                 cx,
             );
+
+            let line_start = prepaint
+                .last_layout
+                .visible_line_byte_offsets
+                .get(vi)
+                .copied()
+                .unwrap_or(0);
+            for (start, icon, color, icon_size, icon_inset) in &reference_icons {
+                if *start < line_start || *start > line_start + line.len() {
+                    continue;
+                }
+                let Some(pos) =
+                    line.position_for_index(start - line_start, &prepaint.last_layout, false)
+                else {
+                    continue;
+                };
+                _ = window.paint_svg(
+                    Bounds::new(
+                        point(
+                            p.x + pos.x + *icon_inset,
+                            line_y + pos.y + (line_height - *icon_size).half(),
+                        ),
+                        size(*icon_size, *icon_size),
+                    ),
+                    icon.clone(),
+                    None,
+                    TransformationMatrix::unit(),
+                    *color,
+                    cx,
+                );
+            }
+
             offset_y += line.size(line_height).height;
 
             if Some(row) == prepaint.current_row {
@@ -2241,6 +2307,53 @@ fn placeholder_line_runs<'a>(
     }
 
     result
+}
+
+/// Runs that paint every inline replacement in its own color.
+///
+/// `base` is the projected offset of the first visible line, because `layout_lines` walks the runs
+/// from there, and `end` is the end of the projected text.
+fn inline_replacement_runs(
+    state: &InputState,
+    base: usize,
+    end: usize,
+    run: &TextRun,
+    disabled: bool,
+) -> Vec<TextRun> {
+    let mut runs: Vec<TextRun> = Vec::new();
+    let mut cursor = base;
+    for span in state.inline_projection.spans() {
+        if span.display.end <= base {
+            continue;
+        }
+        if span.display.start >= end {
+            break;
+        }
+        let start = span.display.start.max(base);
+        let stop = span.display.end.min(end);
+        if start > cursor {
+            runs.push(TextRun {
+                len: start - cursor,
+                ..run.clone()
+            });
+        }
+        let mut replaced = run.clone();
+        replaced.len = stop.saturating_sub(start);
+        if let Some(color) = span.replacement.color {
+            replaced.color = if disabled { color.opacity(0.5) } else { color };
+        }
+        if replaced.len > 0 {
+            runs.push(replaced);
+        }
+        cursor = stop;
+    }
+    if end > cursor {
+        runs.push(TextRun {
+            len: end - cursor,
+            ..run.clone()
+        });
+    }
+    runs
 }
 
 /// Get the runs for the given range.

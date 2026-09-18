@@ -41,6 +41,7 @@ pub struct Input {
     prefix: Option<AnyElement>,
     suffix: Option<AnyElement>,
     height: Option<DefiniteLength>,
+    placeholder_color: Option<Hsla>,
     appearance: bool,
     cleanable: bool,
     mask_toggle: bool,
@@ -51,6 +52,7 @@ pub struct Input {
     selected: bool,
     content_type: Option<InputContentType>,
     role: Option<Role>,
+    aria_label: Option<gpui::SharedString>,
 
     /// An optional context menu builder to allow a custom context menu on the input.
     ///
@@ -86,6 +88,7 @@ impl Input {
             prefix: None,
             suffix: None,
             height: None,
+            placeholder_color: None,
             appearance: true,
             cleanable: false,
             mask_toggle: false,
@@ -96,8 +99,21 @@ impl Input {
             selected: false,
             content_type: None,
             role: None,
+            aria_label: None,
             context_menu_builder: None,
         }
+    }
+
+    /// Override the placeholder color independently of the input text.
+    pub fn placeholder_color(mut self, color: impl Into<Hsla>) -> Self {
+        self.placeholder_color = Some(color.into());
+        self
+    }
+
+    /// Set the accessible name of the editable field.
+    pub fn aria_label(mut self, label: impl Into<gpui::SharedString>) -> Self {
+        self.aria_label = Some(label.into());
+        self
     }
 
     pub fn prefix(mut self, prefix: impl IntoElement) -> Self {
@@ -347,6 +363,7 @@ impl RenderOnce for Input {
         self.state.update(cx, |state, _| {
             state.context_menu_builder = self.context_menu_builder.clone();
             state.disabled = self.disabled;
+            state.placeholder_color = self.placeholder_color;
             state.size = self.size;
 
             // Only for single line mode
@@ -396,6 +413,7 @@ impl RenderOnce for Input {
         div()
             .id(("input", self.state.entity_id()))
             .role(accessibility_role)
+            .when_some(self.aria_label, |this, label| this.aria_label(label))
             .flex()
             .key_context(crate::input::CONTEXT)
             .track_focus(&state.focus_handle.clone())

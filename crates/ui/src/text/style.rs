@@ -1,8 +1,21 @@
 use std::sync::Arc;
 
-use gpui::{Pixels, Rems, StyleRefinement, px, rems};
+use gpui::{Hsla, Pixels, Rems, SharedString, StyleRefinement, px, rems};
 
 use crate::highlighter::HighlightTheme;
+
+/// Typography and decoration for inline code, independent of fenced blocks.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InlineCodeStyle {
+    pub font_family: SharedString,
+    pub font_scale: f32,
+    pub padding_x: Pixels,
+    pub padding_y: Pixels,
+    pub border_width: Pixels,
+    pub radius: Pixels,
+    pub background: Hsla,
+    pub border_color: Hsla,
+}
 
 /// TextViewStyle used to customize the style for [`TextView`].
 #[derive(Clone)]
@@ -16,10 +29,13 @@ pub struct TextViewStyle {
     /// The first parameter is the heading level (1-6), the second parameter is the base font size.
     /// The second parameter is the base font size.
     pub heading_font_size: Option<Arc<dyn Fn(u8, Pixels) -> Pixels + Send + Sync + 'static>>,
+    /// Additional typography and spacing applied to headings.
+    pub heading: StyleRefinement,
     /// Highlight theme for code blocks. Default: [`HighlightTheme::default_light()`]
     pub highlight_theme: Arc<HighlightTheme>,
     /// The style refinement for code blocks.
     pub code_block: StyleRefinement,
+    pub inline_code: Option<InlineCodeStyle>,
     /// Style refinement applied to the table container (the bordered wrapper).
     ///
     /// Set `overflow_x: scroll` here to keep table cells on a single line and
@@ -35,7 +51,9 @@ impl PartialEq for TextViewStyle {
     fn eq(&self, other: &Self) -> bool {
         self.paragraph_gap == other.paragraph_gap
             && self.heading_base_font_size == other.heading_base_font_size
+            && self.heading == other.heading
             && self.highlight_theme == other.highlight_theme
+            && self.inline_code == other.inline_code
     }
 }
 
@@ -45,8 +63,10 @@ impl Default for TextViewStyle {
             paragraph_gap: rems(1.),
             heading_base_font_size: px(14.),
             heading_font_size: None,
+            heading: StyleRefinement::default(),
             highlight_theme: HighlightTheme::default_light().clone(),
             code_block: StyleRefinement::default(),
+            inline_code: None,
             table: StyleRefinement::default(),
             table_cell: StyleRefinement::default(),
             is_dark: false,
@@ -72,6 +92,11 @@ impl TextViewStyle {
     /// Set style for code blocks.
     pub fn code_block(mut self, style: StyleRefinement) -> Self {
         self.code_block = style;
+        self
+    }
+
+    pub fn inline_code(mut self, style: InlineCodeStyle) -> Self {
+        self.inline_code = Some(style);
         self
     }
 

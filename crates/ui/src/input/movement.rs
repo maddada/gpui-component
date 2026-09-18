@@ -19,18 +19,23 @@ impl InputState {
             return;
         };
 
-        let point = self.text.offset_to_point(self.cursor());
-        let Some(line) = last_layout.line(point.row) else {
+        // Columns index the projected text: `last_layout` was shaped from it, and an inline
+        // replacement makes a buffer column and a display column disagree.
+        let row = self.text.offset_to_point(self.cursor()).row;
+        let column = self
+            .display_offset(self.cursor())
+            .saturating_sub(self.display_text().line_start_offset(row));
+        let Some(line) = last_layout.line(row) else {
             self.preferred_column = None;
             return;
         };
 
-        let Some(pos) = line.position_for_index(point.column, last_layout, false) else {
+        let Some(pos) = line.position_for_index(column, last_layout, false) else {
             self.preferred_column = None;
             return;
         };
 
-        self.preferred_column = Some((pos.x, point.column));
+        self.preferred_column = Some((pos.x, column));
     }
 
     /// Move the cursor to the given offset.
@@ -71,7 +76,7 @@ impl InputState {
             return;
         };
 
-        let offset = self.cursor();
+        let offset = self.display_offset(self.cursor());
         let was_preferred_column = self.preferred_column;
 
         let mut display_point = self.display_map.offset_to_wrap_display_point(offset);
@@ -104,7 +109,7 @@ impl InputState {
             let next_point = self
                 .display_map
                 .wrap_display_point_to_point(next_display_point);
-            let line_start_offset = self.text.line_start_offset(next_point.row);
+            let line_start_offset = self.display_text().line_start_offset(next_point.row);
 
             // If in visible range, prefer to use position to get column.
             if let Some(line) = last_layout.line(next_point.row) {
@@ -119,7 +124,7 @@ impl InputState {
                 }
             } else {
                 // Not in visible range, use column directly.
-                let max_line_len = self.text.slice_line(next_point.row).len();
+                let max_line_len = self.display_text().slice_line(next_point.row).len();
                 new_offset = line_start_offset + column.min(max_line_len);
             }
         }
@@ -130,7 +135,7 @@ impl InputState {
         } else {
             MoveDirection::Down
         };
-        self.move_to(new_offset, Some(direction), cx);
+        self.move_to(self.buffer_offset(new_offset), Some(direction), cx);
         // Set back the preferred_column
         self.preferred_column = was_preferred_column;
         cx.notify();

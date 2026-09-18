@@ -184,6 +184,10 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &mdast::Node, cx: &mut NodeC
             text = val.value.clone();
             paragraph.push_str(&val.value)
         }
+        Node::Break(_) => {
+            text.push('\n');
+            paragraph.push_str("\n");
+        }
         Node::Emphasis(val) => {
             text = merge_children_with_mark(
                 paragraph,

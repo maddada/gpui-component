@@ -1,7 +1,11 @@
 mod document;
 mod format;
 mod inline;
+mod inline_code;
 mod inline_flow;
+mod inline_prose;
+mod inline_link;
+pub use inline_link::InlineLink;
 mod markdown_ext;
 mod node;
 pub(crate) mod selection;

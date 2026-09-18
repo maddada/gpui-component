@@ -451,6 +451,15 @@ impl Root {
         // the new points.
         let old_points = self.text_selection.resolved_points(cx);
         let endpoint = self.text_selection_endpoint(position, window, cx);
+        // CDXC:FocusRouting 2026-09-17 WHY:
+        // A drag from blank space can highlight text while the composer retains keyboard focus and consumes Copy.
+        // Focus the first actual text hit without stealing focus for an ordinary blank click.
+        if !self.text_selection.did_hit_text && endpoint.inside_text {
+            if let Some(view) = endpoint.view.as_ref().and_then(|view| view.upgrade()) {
+                let focus_handle = view.read(cx).focus_handle.clone();
+                focus_handle.focus(window, cx);
+            }
+        }
         self.text_selection.did_hit_text |= endpoint.inside_text;
         self.text_selection.cursor = Some(endpoint);
         let new_points = self.text_selection.resolved_points(cx);

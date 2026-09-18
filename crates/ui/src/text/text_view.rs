@@ -19,6 +19,8 @@ use crate::{global_state::GlobalState, text::TextViewStyle};
 pub(crate) type CodeBlockActionsFn =
     dyn Fn(&CodeBlock, &mut Window, &mut App) -> AnyElement + Send + Sync;
 
+pub(crate) type LinkClickFn = dyn Fn(&str, gpui::Modifiers, &mut Window, &mut App) + Send + Sync;
+
 /// A text view that can render Markdown or HTML.
 ///
 /// ## Goals
@@ -46,6 +48,8 @@ pub struct TextView {
     selectable: bool,
     scrollable: bool,
     code_block_actions: Option<Arc<CodeBlockActionsFn>>,
+    link_click: Option<Arc<LinkClickFn>>,
+    link_presentation: Option<Arc<super::inline_link::LinkPresentationFn>>,
     markdown_extensions: Arc<MarkdownExtensions>,
 }
 
@@ -85,6 +89,8 @@ impl TextView {
             selectable: false,
             scrollable: false,
             code_block_actions: None,
+            link_click: None,
+            link_presentation: None,
             markdown_extensions: Arc::default(),
         }
     }
@@ -101,6 +107,8 @@ impl TextView {
             selectable: false,
             scrollable: false,
             code_block_actions: None,
+            link_click: None,
+            link_presentation: None,
             markdown_extensions: Arc::default(),
         }
     }
@@ -117,6 +125,8 @@ impl TextView {
             selectable: false,
             scrollable: false,
             code_block_actions: None,
+            link_click: None,
+            link_presentation: None,
             markdown_extensions: Arc::default(),
         }
     }
@@ -147,6 +157,24 @@ impl TextView {
     /// This mode is suitable for small content, such as a few lines of text, a label, etc.
     pub fn scrollable(mut self, scrollable: bool) -> Self {
         self.scrollable = scrollable;
+        self
+    }
+
+    /// Let the host route links, including relative file paths and click modifiers.
+    pub fn on_link_click(
+        mut self,
+        handler: impl Fn(&str, gpui::Modifiers, &mut Window, &mut App) + Send + Sync + 'static,
+    ) -> Self {
+        self.link_click = Some(Arc::new(handler));
+        self
+    }
+
+    /// Customize inline link labels and icons without changing host click routing.
+    pub fn link_presentation(
+        mut self,
+        resolve: impl Fn(&str, &str) -> Option<super::InlineLink> + Send + Sync + 'static,
+    ) -> Self {
+        self.link_presentation = Some(Arc::new(resolve));
         self
     }
 
@@ -278,6 +306,8 @@ impl Element for TextView {
 
         state.update(cx, |state, cx| {
             state.code_block_actions = self.code_block_actions.clone();
+            state.link_click = self.link_click.clone();
+            state.link_presentation = self.link_presentation.clone();
             state.set_markdown_extensions(self.markdown_extensions.clone(), cx);
             state.selectable = self.selectable;
             state.scrollable = self.scrollable;

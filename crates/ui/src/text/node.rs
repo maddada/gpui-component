@@ -438,6 +438,7 @@ pub(crate) struct Paragraph {
     pub(super) link_refs: HashMap<SharedString, SharedString>,
 
     pub(crate) state: Arc<Mutex<InlineState>>,
+    pub(super) flow_states: Arc<Mutex<Vec<Arc<Mutex<InlineState>>>>>,
 }
 
 impl PartialEq for Paragraph {
@@ -455,11 +456,25 @@ impl Paragraph {
             children: vec![InlineNode::new(&text)],
             link_refs: HashMap::new(),
             state: Arc::new(Mutex::new(InlineState::default())),
+            flow_states: Default::default(),
         }
     }
 
     pub(super) fn selected_text(&self) -> String {
         let mut text = String::new();
+
+        if let Ok(states) = self.flow_states.lock()
+            && !states.is_empty()
+        {
+            for state in states.iter() {
+                if let Ok(state) = state.lock()
+                    && let Some(selection) = &state.selection
+                {
+                    text.push_str(&state.text[selection.start..selection.end]);
+                }
+            }
+            return text;
+        }
 
         for c in self.children.iter() {
             let Ok(state) = c.state.lock() else {
@@ -491,6 +506,13 @@ impl Paragraph {
     ///
     /// Mirrors the [`selected_text`](Self::selected_text) traversal.
     pub(super) fn clear_selection(&self) {
+        if let Ok(states) = self.flow_states.lock() {
+            for state in states.iter() {
+                if let Ok(mut state) = state.lock() {
+                    state.selection = None;
+                }
+            }
+        }
         for c in self.children.iter() {
             if let Ok(mut state) = c.state.lock() {
                 state.selection = None;
@@ -555,6 +577,7 @@ impl Paragraph {
                 children: vec![],
                 link_refs: Default::default(),
                 state: Arc::new(Mutex::new(InlineState::default())),
+                flow_states: Default::default(),
             },
         )
     }
@@ -775,6 +798,8 @@ pub(crate) struct NodeContext {
     pub(crate) offset: usize,
     pub(crate) link_refs: HashMap<SharedString, LinkMark>,
     pub(crate) style: TextViewStyle,
+    pub(crate) link_presentation: Option<Arc<super::inline_link::LinkPresentationFn>>,
+    pub(crate) link_click: Option<Arc<super::LinkClickFn>>,
     pub(crate) code_block_actions: Option<Arc<CodeBlockActionsFn>>,
     pub(crate) markdown_extensions: Arc<MarkdownExtensions>,
 }
@@ -798,12 +823,41 @@ impl Paragraph {
         let span = self.span;
         let children = &self.children;
 
-        if self.should_render_inline_flow() {
+        if node_cx.style.inline_code.is_some()
+            || node_cx.link_presentation.is_some()
+                && children
+                    .iter()
+                    .any(|child| child.marks.iter().any(|(_, mark)| mark.link.is_some()))
+            || self.should_render_inline_flow()
+            || node_cx.style.inline_code.is_some()
+                && children
+                    .iter()
+                    .any(|child| child.marks.iter().any(|(_, mark)| mark.code))
+        {
             return InlineFlow::new(
                 span.unwrap_or_default(),
                 self.inline_flow_items(node_cx, cx),
+                self.flow_states.clone(),
             )
+            .with_link_click(node_cx.link_click.clone())
+            .with_inline_code(node_cx.style.inline_code.clone(), {
+                let mut offset = 0;
+                let mut ranges = Vec::new();
+                for child in children {
+                    for (range, mark) in &child.marks {
+                        if mark.code {
+                            ranges.push(offset + range.start..offset + range.end);
+                        }
+                    }
+                    offset += child.text.len() + usize::from(child.image.is_some());
+                }
+                ranges
+            })
+            .with_link_presentation(node_cx.link_presentation.as_deref())
             .into_any_element();
+        }
+        if let Ok(mut states) = self.flow_states.lock() {
+            states.clear();
         }
 
         let mut child_nodes: Vec<AnyElement> = vec![];
@@ -841,14 +895,19 @@ impl Paragraph {
                         .when_some(image.width, |this, width| this.w(width))
                         .when_some(image.link.clone(), |this, link| {
                             let title = image.title();
+                            let handler = node_cx.link_click.clone();
                             this.cursor_pointer()
                                 .tooltip(move |window, cx| {
                                     Tooltip::new(title.clone()).build(window, cx)
                                 })
-                                .on_click(move |_, window, cx| {
+                                .on_click(move |event, window, cx| {
                                     window.end_text_selection(cx);
                                     cx.stop_propagation();
-                                    cx.open_url(&link.url);
+                                    if let Some(handler) = &handler {
+                                        handler(&link.url, event.modifiers(), window, cx);
+                                    } else {
+                                        cx.open_url(&link.url);
+                                    }
                                 })
                         })
                         .into_any_element(),
@@ -882,7 +941,7 @@ impl Paragraph {
                             ..Default::default()
                         });
                     }
-                    if style.code {
+                    if style.code && node_cx.style.inline_code.is_none() {
                         highlight.background_color = Some(cx.theme().accent);
                     }
                     if let Some(color) = style.highlight {
@@ -953,6 +1012,8 @@ impl Paragraph {
                         state.set_text(text.clone().into());
                     }
                     items.push(InlineFlowItem::Text {
+                        code: None,
+                        reference: None,
                         state: inline_node.state.clone(),
                         text: text.clone().into(),
                         links: links.clone(),
@@ -996,7 +1057,7 @@ impl Paragraph {
                             ..Default::default()
                         });
                     }
-                    if style.code {
+                    if style.code && node_cx.style.inline_code.is_none() {
                         highlight.background_color = Some(cx.theme().accent);
                     }
                     if let Some(color) = style.highlight {
@@ -1032,6 +1093,8 @@ impl Paragraph {
                 state.set_text(text.clone().into());
             }
             items.push(InlineFlowItem::Text {
+                code: None,
+                reference: None,
                 state: self.state.clone(),
                 text: text.into(),
                 links,
@@ -1654,6 +1717,8 @@ impl BlockNode {
                     .whitespace_normal()
                     .text_size(text_size)
                     .font_weight(font_weight)
+                    .refine_style(&node_cx.style.heading)
+                    .when(options.is_last, |this| this.pb(px(0.0)))
                     .child(children.render(node_cx, window, cx))
                     .into_any_element()
             }

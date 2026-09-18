@@ -26,6 +26,7 @@ use super::{
     blink_cursor::BlinkCursor,
     change::Change,
     element::{EditorScrollbarSnapshot, TextElement},
+    inline_replacement::{InlineProjection, InlineReplacement},
     mask_pattern::{MaskPattern, normalize_number_input},
     mode::InputMode,
     number_input,
@@ -404,6 +405,9 @@ pub struct InputState {
     /// its default mask when the user has not made an explicit choice.
     pub(super) mask_pattern_set: bool,
     pub(super) placeholder: SharedString,
+    pub(super) placeholder_color: Option<gpui::Hsla>,
+    /// Source spans drawn as compact glyph runs instead of their own text.
+    pub(super) inline_projection: InlineProjection,
 
     /// Popover
     diagnostic_popover: Option<Entity<DiagnosticPopover>>,
@@ -529,6 +533,8 @@ impl InputState {
             deferred_scroll_offset: None,
             preferred_column: None,
             placeholder: SharedString::default(),
+            placeholder_color: None,
+            inline_projection: InlineProjection::default(),
             mask_pattern: MaskPattern::default(),
             mask_pattern_set: false,
             text_align: TextAlign::Left,
@@ -725,6 +731,58 @@ impl InputState {
         cx.notify();
     }
 
+    /// Draw the given source ranges as compact glyph runs instead of their own text.
+    ///
+    /// The buffer keeps the original text, so the value, the clipboard, and undo are unchanged;
+    /// only wrapping, hit testing, and painting use the shortened string. Replacements are dropped
+    /// whenever the text is edited, so the caller re-sets them from its own render pass.
+    ///
+    /// CDXC:SessionChat 2026-09-18 WHY:
+    /// Ghostex composers show markdown references as pills, and doing that with an overlay or by
+    /// storing the pill text in the buffer both lost the real source on copy and on send.
+    pub fn set_inline_replacements(
+        &mut self,
+        replacements: Vec<InlineReplacement>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.inline_projection.matches(&replacements) {
+            return;
+        }
+        self.inline_projection.rebuild(&self.text, replacements);
+        let display_text = self.display_text().clone();
+        self.display_map.set_text(&display_text, cx);
+        self.mode.update_auto_grow(&self.display_map);
+        cx.notify();
+    }
+
+    /// The text that layout, hit testing, and painting run on.
+    #[inline]
+    pub(super) fn display_text(&self) -> &Rope {
+        if self.inline_projection.is_empty() {
+            &self.text
+        } else {
+            self.inline_projection.text()
+        }
+    }
+
+    /// Map a buffer offset into the coordinate space of [`Self::display_text`].
+    pub(super) fn display_offset(&self, offset: usize) -> usize {
+        if self.masked {
+            return self.text.offset_to_char_index(offset) * MASK_CHAR.len_utf8();
+        }
+        self.inline_projection.to_display(offset)
+    }
+
+    /// Map an offset in [`Self::display_text`] back into the buffer.
+    pub(super) fn buffer_offset(&self, offset: usize) -> usize {
+        if self.masked {
+            return self
+                .text
+                .char_index_to_offset(offset / MASK_CHAR.len_utf8());
+        }
+        self.inline_projection.to_buffer(offset).min(self.text.len())
+    }
+
     #[inline]
     pub fn diagnostics(&self) -> Option<&DiagnosticSet> {
         self.mode.diagnostics()
@@ -763,6 +821,7 @@ impl InputState {
         let line_height = last_layout.line_height;
 
         let mut y_offset = last_layout.visible_top;
+        let offset = self.display_offset(offset);
         for (vi, line) in last_layout.lines.iter().enumerate() {
             let prev_lines_offset = last_layout.visible_line_byte_offsets[vi];
             let local_offset = offset.saturating_sub(prev_lines_offset);
@@ -1955,6 +2014,10 @@ impl InputState {
         let line_height = last_layout.line_height;
 
         let point = self.text.offset_to_point(offset);
+        // Columns index the projected text, which is what `last_layout.lines` was shaped from.
+        let column = self
+            .display_offset(offset)
+            .saturating_sub(self.display_text().line_start_offset(point.row));
 
         let row = point.row;
 
@@ -1973,7 +2036,7 @@ impl InputState {
             .get(row.saturating_sub(last_layout.visible_range.start))
         {
             // Check to scroll horizontally and soft wrap lines
-            if let Some(pos) = line.position_for_index(point.column, last_layout, false) {
+            if let Some(pos) = line.position_for_index(column, last_layout, false) {
                 let bounds_width = bounds.size.width - last_layout.line_number_width;
                 let col_offset_x = pos.x;
                 row_offset_y += pos.y;
@@ -2162,6 +2225,24 @@ impl InputState {
     }
 
     pub(crate) fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
+        self.buffer_offset(self.display_index_for_mouse_position(position))
+    }
+
+    /// The source range of the inline replacement under `position`, if the pointer is over one.
+    pub fn inline_replacement_at(&self, position: Point<Pixels>) -> Option<Range<usize>> {
+        if self.inline_projection.is_empty() {
+            return None;
+        }
+        let offset = self.display_index_for_mouse_position(position);
+        self.inline_projection
+            .spans()
+            .iter()
+            .find(|span| offset >= span.display.start && offset < span.display.end)
+            .map(|span| span.source.clone())
+    }
+
+    /// Same as [`Self::index_for_mouse_position`], in the projected coordinate space.
+    fn display_index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
         // If the text is empty, always return 0
         if self.text.len() == 0 {
             return 0;
@@ -2205,38 +2286,22 @@ impl InputState {
 
             // Return offset by use closest_index_for_x if is single line mode.
             if self.mode.is_single_line() {
-                let local_index = line_layout.closest_index_for_x(pos.x, last_layout);
-                let index = line_start_offset + local_index;
-                return if self.masked {
-                    self.text.char_index_to_offset(index / MASK_CHAR.len_utf8())
-                } else {
-                    index.min(self.text.len())
-                };
+                return line_start_offset + line_layout.closest_index_for_x(pos.x, last_layout);
             }
 
             // Check if mouse is in this line's bounds
             if let Some(local_index) = line_layout.closest_index_for_position(pos, last_layout) {
-                let index = line_start_offset + local_index;
-                return if self.masked {
-                    self.text.char_index_to_offset(index / MASK_CHAR.len_utf8())
-                } else {
-                    index.min(self.text.len())
-                };
+                return line_start_offset + local_index;
             } else if pos.y < px(0.) {
                 // Mouse is above this line, return start of this line
-                return if self.masked {
-                    self.text
-                        .char_index_to_offset(line_start_offset / MASK_CHAR.len_utf8())
-                } else {
-                    line_start_offset
-                };
+                return line_start_offset;
             }
 
             y_offset += line_layout.size(line_height).height;
         }
 
         // Mouse is below all visible lines, return end of text
-        self.text.len()
+        self.display_text().len()
     }
 
     /// Returns a y offsetted point for the line origin.
@@ -2338,6 +2403,11 @@ impl InputState {
             }
         }
 
+        // An inline replacement is one glyph run on screen, so it is one step for the caret and
+        // one press of backspace, the way an atomic pill behaves in the React composer.
+        if let Some(range) = self.inline_projection.enclosing(offset) {
+            return range.start;
+        }
         self.clamp_offset_to_visible_backward(offset)
     }
 
@@ -2349,6 +2419,9 @@ impl InputState {
             }
         }
 
+        if let Some(range) = self.inline_projection.enclosing(offset) {
+            return range.end;
+        }
         self.clamp_offset_to_visible_forward(offset)
     }
 
@@ -2943,8 +3016,15 @@ impl EntityInputHandler for InputState {
         // Adjust folds before updating wrap map: remove overlapping folds and shift others
         self.display_map
             .adjust_folds_for_edit(&old_text, &range, new_text);
-        self.display_map
-            .on_text_changed(&self.text, &range, &Rope::from(new_text), cx);
+        // The projection was built from offsets this edit just moved, so drop it and let the
+        // host re-set it from its next render. Until then the display map holds the buffer text.
+        if self.inline_projection.clear() {
+            let text = self.text.clone();
+            self.display_map.set_text(&text, cx);
+        } else {
+            self.display_map
+                .on_text_changed(&self.text, &range, &Rope::from(new_text), cx);
+        }
 
         let bg = self
             .mode
@@ -3017,8 +3097,15 @@ impl EntityInputHandler for InputState {
         // Adjust folds before updating wrap map: remove overlapping folds and shift others
         self.display_map
             .adjust_folds_for_edit(&old_text, &range, new_text);
-        self.display_map
-            .on_text_changed(&self.text, &range, &Rope::from(new_text), cx);
+        // The projection was built from offsets this edit just moved, so drop it and let the
+        // host re-set it from its next render. Until then the display map holds the buffer text.
+        if self.inline_projection.clear() {
+            let text = self.text.clone();
+            self.display_map.set_text(&text, cx);
+        } else {
+            self.display_map
+                .on_text_changed(&self.text, &range, &Rope::from(new_text), cx);
+        }
 
         let bg = self
             .mode
@@ -3060,6 +3147,7 @@ impl EntityInputHandler for InputState {
         let line_height = last_layout.line_height;
         let line_number_width = last_layout.line_number_width;
         let range = self.range_from_utf16(&range_utf16);
+        let range = self.display_offset(range.start)..self.display_offset(range.end);
 
         let mut start_origin = None;
         let mut end_origin = None;
@@ -3120,7 +3208,7 @@ impl EntityInputHandler for InputState {
         for (vi, line) in last_layout.lines.iter().enumerate() {
             let offset = last_layout.visible_line_byte_offsets[vi];
             if let Some(utf8_index) = line.index_for_position(line_point, last_layout) {
-                return Some(self.offset_to_utf16(offset + utf8_index));
+                return Some(self.offset_to_utf16(self.buffer_offset(offset + utf8_index)));
             }
         }
 
