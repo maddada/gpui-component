@@ -26,6 +26,8 @@ pub struct InlineReplacement {
     pub icon_size: Pixels,
     /// Distance from the replacement's left edge to the icon's left edge.
     pub icon_inset: Pixels,
+    /// Whether hovering the replacement shows a hand cursor because a click does something.
+    pub pointer: bool,
 }
 
 impl InlineReplacement {
@@ -37,6 +39,7 @@ impl InlineReplacement {
             icon: None,
             icon_size: px(0.),
             icon_inset: px(0.),
+            pointer: false,
         }
     }
 
@@ -49,6 +52,11 @@ impl InlineReplacement {
         self.icon = Some(icon.into());
         self.icon_size = size;
         self.icon_inset = inset;
+        self
+    }
+
+    pub fn pointer(mut self, pointer: bool) -> Self {
+        self.pointer = pointer;
         self
     }
 }

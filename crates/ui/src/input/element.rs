@@ -14,6 +14,8 @@ use ropey::Rope;
 use smallvec::SmallVec;
 use std::{ops::Range, rc::Rc};
 
+use gpui::CursorStyle;
+
 use crate::{
     ActiveTheme as _, Colorize, IconName, Root, Selectable, Sizable as _,
     button::{Button, ButtonVariants as _},
@@ -277,6 +279,18 @@ struct FoldIconLayout {
     line_number_hitbox: Hitbox,
     /// List of (display_row, is_folded, icon_element) pairs for each fold candidate
     icons: Vec<(usize, bool, gpui::AnyElement)>,
+}
+
+/// An inline replacement resolved to screen geometry for one frame.
+struct ReferencePill {
+    hitbox: Hitbox,
+    bounds: Bounds<Pixels>,
+    underline_y: Pixels,
+    icon: Option<SharedString>,
+    icon_size: Pixels,
+    icon_inset: Pixels,
+    color: Hsla,
+    pointer: bool,
 }
 
 pub(super) struct TextElement {
@@ -701,6 +715,72 @@ impl TextElement {
         };
 
         Self::layout_match_range(symbol_range, last_layout, bounds)
+    }
+
+    /// Screen geometry of every inline replacement on a visible line.
+    ///
+    /// The hitbox is what makes the pointer turn into a hand over a pill and what invalidates the
+    /// frame when the pointer enters or leaves it, so the hover underline can appear at all.
+    fn layout_reference_pills(
+        &self,
+        last_layout: &LastLayout,
+        bounds: &Bounds<Pixels>,
+        text_size: Pixels,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Vec<ReferencePill> {
+        let state = self.state.read(cx);
+        if state.inline_projection.is_empty() {
+            return vec![];
+        }
+        let disabled = state.disabled;
+        let foreground = cx.theme().foreground;
+        let spans = state.inline_projection.spans().to_vec();
+        let line_height = last_layout.line_height;
+        let origin = bounds.origin + point(last_layout.line_number_width, px(0.));
+        // The dotted rule sits 0.18em under the baseline, and the baseline is about 0.8em below
+        // the top of the text box, which is centred in the line box.
+        let underline_offset = (line_height - text_size).half() + text_size * 0.98;
+        let mut pills = Vec::new();
+        let mut offset_y = last_layout.visible_top;
+        for (vi, line) in last_layout.lines.iter().enumerate() {
+            let line_start = last_layout
+                .visible_line_byte_offsets
+                .get(vi)
+                .copied()
+                .unwrap_or(0);
+            for span in &spans {
+                if span.display.start < line_start || span.display.end > line_start + line.len() {
+                    continue;
+                }
+                let (Some(start), Some(end)) = (
+                    line.position_for_index(span.display.start - line_start, last_layout, false),
+                    line.position_for_index(span.display.end - line_start, last_layout, false),
+                ) else {
+                    continue;
+                };
+                if start.y != end.y || end.x <= start.x {
+                    continue;
+                }
+                let color = span.replacement.color.unwrap_or(foreground);
+                let rect = Bounds::new(
+                    origin + point(start.x, offset_y + start.y),
+                    size(end.x - start.x, line_height),
+                );
+                pills.push(ReferencePill {
+                    hitbox: window.insert_hitbox(rect, HitboxBehavior::Normal),
+                    bounds: rect,
+                    underline_y: rect.origin.y + underline_offset,
+                    icon: span.replacement.icon.clone(),
+                    icon_size: span.replacement.icon_size,
+                    icon_inset: span.replacement.icon_inset,
+                    color: if disabled { color.opacity(0.5) } else { color },
+                    pointer: span.replacement.pointer && !disabled,
+                });
+            }
+            offset_y += line.size(line_height).height;
+        }
+        pills
     }
 
     fn layout_document_colors(
@@ -1385,6 +1465,7 @@ pub(super) struct PrepaintState {
     current_row: Option<usize>,
     selection_path: Option<Path<Pixels>>,
     hover_highlight_path: Option<Path<Pixels>>,
+    reference_pills: Vec<ReferencePill>,
     search_match_paths: Vec<(Path<Pixels>, bool)>,
     document_color_paths: Vec<(Path<Pixels>, Hsla)>,
     hover_definition_hitbox: Option<Hitbox>,
@@ -1892,6 +1973,8 @@ impl Element for TextElement {
             )));
         let fold_icon_layout =
             self.layout_fold_icons(original_x, &bounds, &last_layout, window, cx);
+        let reference_pills =
+            self.layout_reference_pills(&last_layout, &bounds, text_size, window, cx);
 
         PrepaintState {
             bounds,
@@ -1904,6 +1987,7 @@ impl Element for TextElement {
             selection_path,
             search_match_paths,
             hover_highlight_path,
+            reference_pills,
             hover_definition_hitbox,
             document_color_paths,
             indent_guides_path,
@@ -2061,35 +2145,11 @@ impl Element for TextElement {
         // Track the y-position of the cursor row for positioning the first line suffix
         let mut cursor_row_y = None;
 
-        // Icons of the inline replacements, resolved before the loop so the state borrow ends
-        // before the lines take `cx` to paint.
-        let reference_icons: Vec<(usize, SharedString, Hsla, Pixels, Pixels)> = {
-            let state = self.state.read(cx);
-            state
-                .inline_projection
-                .spans()
-                .iter()
-                .filter_map(|span| {
-                    let replacement = &span.replacement;
-                    let icon = replacement.icon.clone()?;
-                    let color = replacement.color.unwrap_or(cx.theme().foreground);
-                    Some((
-                        span.display.start,
-                        icon,
-                        if disabled { color.opacity(0.5) } else { color },
-                        replacement.icon_size,
-                        replacement.icon_inset,
-                    ))
-                })
-                .collect()
-        };
-
-        for (vi, (line, &buffer_line)) in prepaint
+        for (line, &buffer_line) in prepaint
             .last_layout
             .lines
             .iter()
             .zip(prepaint.last_layout.visible_buffer_lines.iter())
-            .enumerate()
         {
             let row = buffer_line;
             let line_y = origin.y + offset_y;
@@ -2107,37 +2167,6 @@ impl Element for TextElement {
                 window,
                 cx,
             );
-
-            let line_start = prepaint
-                .last_layout
-                .visible_line_byte_offsets
-                .get(vi)
-                .copied()
-                .unwrap_or(0);
-            for (start, icon, color, icon_size, icon_inset) in &reference_icons {
-                if *start < line_start || *start > line_start + line.len() {
-                    continue;
-                }
-                let Some(pos) =
-                    line.position_for_index(start - line_start, &prepaint.last_layout, false)
-                else {
-                    continue;
-                };
-                _ = window.paint_svg(
-                    Bounds::new(
-                        point(
-                            p.x + pos.x + *icon_inset,
-                            line_y + pos.y + (line_height - *icon_size).half(),
-                        ),
-                        size(*icon_size, *icon_size),
-                    ),
-                    icon.clone(),
-                    None,
-                    TransformationMatrix::unit(),
-                    *color,
-                    cx,
-                );
-            }
 
             offset_y += line.size(line_height).height;
 
@@ -2173,6 +2202,42 @@ impl Element for TextElement {
                     );
                     offset_y += line_height;
                 }
+            }
+        }
+
+        // Paint the inline replacements' icons, their hover rule, and their pointer cursor.
+        for pill in prepaint.reference_pills.iter() {
+            if pill.pointer {
+                window.set_cursor_style(CursorStyle::PointingHand, &pill.hitbox);
+            }
+            if let Some(icon) = &pill.icon {
+                _ = window.paint_svg(
+                    Bounds::new(
+                        point(
+                            pill.bounds.origin.x + pill.icon_inset,
+                            pill.bounds.origin.y + (line_height - pill.icon_size).half(),
+                        ),
+                        size(pill.icon_size, pill.icon_size),
+                    ),
+                    icon.clone(),
+                    None,
+                    TransformationMatrix::unit(),
+                    pill.color,
+                    cx,
+                );
+            }
+            if !pill.hitbox.is_hovered(window) {
+                continue;
+            }
+            // A 1px dotted rule, drawn dot by dot because a `TextRun` underline is always solid.
+            let mut x = pill.bounds.origin.x;
+            let right = pill.bounds.origin.x + pill.bounds.size.width;
+            while x < right {
+                window.paint_quad(fill(
+                    Bounds::new(point(x, pill.underline_y), size(px(1.), px(1.))),
+                    pill.color,
+                ));
+                x += px(2.);
             }
         }
 
