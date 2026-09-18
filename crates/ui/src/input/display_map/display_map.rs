@@ -250,6 +250,12 @@ impl DisplayMap {
         self.rebuild_fold_projection();
     }
 
+    /// Replace the text outright, recomputing every wrapped line.
+    pub fn reset_text(&mut self, text: &Rope, cx: &mut App) {
+        self.wrap_map.reset_text(text, cx);
+        self.rebuild_fold_projection();
+    }
+
     // ==================== Internal Helpers ====================
 
     /// Rebuild fold projection after wrap_map or fold state changes

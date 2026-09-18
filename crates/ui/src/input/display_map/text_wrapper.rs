@@ -348,6 +348,19 @@ impl TextWrapper {
     /// Update the text wrapper and recalculate the wrapped lines.
     ///
     /// If the `text` is the same as the current text, do nothing.
+    /// Replace the wrapped text outright and recompute every line.
+    ///
+    /// CDXC:SessionChat 2026-09-18 WHY:
+    /// `prepare_if_need` is a one-shot initializer, so the inline-replacement projection needs a
+    /// way to swap the wrapped text wholesale when a composer turns its markdown references into
+    /// pills and back. Without it the wrapped line lengths keep describing the previous text.
+    pub(crate) fn reset_text(&mut self, text: &Rope, cx: &mut App) {
+        self.lines = SumTree::new(&());
+        self.text = Rope::new();
+        self._initialized = true;
+        self.update_all(text, cx);
+    }
+
     fn update_all(&mut self, text: &Rope, cx: &mut App) {
         self.update(text, &(0..text.len()), &text, cx);
     }

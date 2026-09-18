@@ -750,7 +750,7 @@ impl InputState {
         }
         self.inline_projection.rebuild(&self.text, replacements);
         let display_text = self.display_text().clone();
-        self.display_map.set_text(&display_text, cx);
+        self.display_map.reset_text(&display_text, cx);
         self.mode.update_auto_grow(&self.display_map);
         cx.notify();
     }
@@ -780,7 +780,9 @@ impl InputState {
                 .text
                 .char_index_to_offset(offset / MASK_CHAR.len_utf8());
         }
-        self.inline_projection.to_buffer(offset).min(self.text.len())
+        self.inline_projection
+            .to_buffer(offset)
+            .min(self.text.len())
     }
 
     #[inline]
@@ -3020,7 +3022,7 @@ impl EntityInputHandler for InputState {
         // host re-set it from its next render. Until then the display map holds the buffer text.
         if self.inline_projection.clear() {
             let text = self.text.clone();
-            self.display_map.set_text(&text, cx);
+            self.display_map.reset_text(&text, cx);
         } else {
             self.display_map
                 .on_text_changed(&self.text, &range, &Rope::from(new_text), cx);
@@ -3101,7 +3103,7 @@ impl EntityInputHandler for InputState {
         // host re-set it from its next render. Until then the display map holds the buffer text.
         if self.inline_projection.clear() {
             let text = self.text.clone();
-            self.display_map.set_text(&text, cx);
+            self.display_map.reset_text(&text, cx);
         } else {
             self.display_map
                 .on_text_changed(&self.text, &range, &Rope::from(new_text), cx);

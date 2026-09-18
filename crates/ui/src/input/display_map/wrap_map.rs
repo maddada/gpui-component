@@ -131,6 +131,11 @@ impl WrapMap {
         self.wrapper.prepare_if_need(text, cx);
     }
 
+    /// Replace the wrapped text, recomputing every line even when already initialized.
+    pub fn reset_text(&mut self, text: &Rope, cx: &mut App) {
+        self.wrapper.reset_text(text, cx);
+    }
+
     /// Get access to the underlying wrapper (for rendering/hit-testing)
     pub(crate) fn wrapper(&self) -> &TextWrapper {
         &self.wrapper
