@@ -750,6 +750,8 @@ impl InputState {
         }
         self.inline_projection.rebuild(&self.text, replacements);
         let display_text = self.display_text().clone();
+        self.display_map
+            .set_unbreakable(self.inline_projection.display_ranges());
         self.display_map.reset_text(&display_text, cx);
         self.mode.update_auto_grow(&self.display_map);
         cx.notify();
@@ -1426,10 +1428,16 @@ impl InputState {
         // FIXME: Avoid to_string
         let left_part = self.text.slice(0..offset).to_string();
 
-        UnicodeSegmentation::split_word_bound_indices(left_part.as_str())
+        let start = UnicodeSegmentation::split_word_bound_indices(left_part.as_str())
             .rfind(|(_, s)| !s.trim_start().is_empty())
             .map(|(i, _)| i)
-            .unwrap_or(0)
+            .unwrap_or(0);
+        // A replacement is one glyph run, so word motion lands on its own edge rather than on a
+        // word boundary hidden inside it, which the caret could never reach.
+        match self.inline_projection.enclosing(start) {
+            Some(range) => range.start,
+            None => start,
+        }
     }
 
     /// Return the next end offset of the next word.
@@ -1438,10 +1446,14 @@ impl InputState {
         let offset = self.offset_from_utf16(self.offset_to_utf16(offset));
         let right_part = self.text.slice(offset..self.text.len()).to_string();
 
-        UnicodeSegmentation::split_word_bound_indices(right_part.as_str())
+        let end = UnicodeSegmentation::split_word_bound_indices(right_part.as_str())
             .find(|(_, s)| !s.trim_start().is_empty())
             .map(|(i, s)| offset + i + s.len())
-            .unwrap_or(self.text.len())
+            .unwrap_or(self.text.len());
+        match self.inline_projection.enclosing(end) {
+            Some(range) => range.end,
+            None => end,
+        }
     }
 
     /// Get start of line byte offset of cursor.
@@ -3022,6 +3034,7 @@ impl EntityInputHandler for InputState {
         // host re-set it from its next render. Until then the display map holds the buffer text.
         if self.inline_projection.clear() {
             let text = self.text.clone();
+            self.display_map.set_unbreakable(Vec::new());
             self.display_map.reset_text(&text, cx);
         } else {
             self.display_map
@@ -3103,6 +3116,7 @@ impl EntityInputHandler for InputState {
         // host re-set it from its next render. Until then the display map holds the buffer text.
         if self.inline_projection.clear() {
             let text = self.text.clone();
+            self.display_map.set_unbreakable(Vec::new());
             self.display_map.reset_text(&text, cx);
         } else {
             self.display_map

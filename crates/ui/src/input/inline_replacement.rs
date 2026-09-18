@@ -205,6 +205,11 @@ impl InlineProjection {
         offset.saturating_add_signed(delta)
     }
 
+    /// Display ranges the soft wrap must keep whole, in order.
+    pub(super) fn display_ranges(&self) -> Vec<Range<usize>> {
+        self.spans.iter().map(|span| span.display.clone()).collect()
+    }
+
     /// The source range that strictly contains `offset`, if any.
     pub(super) fn enclosing(&self, offset: usize) -> Option<Range<usize>> {
         self.spans

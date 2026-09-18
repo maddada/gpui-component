@@ -15,7 +15,17 @@ impl InputState {
             return;
         };
 
-        self.selected_range = (range.start..range.end).into();
+        // An inline replacement is one glyph run, so a word that reaches into one takes all of it
+        // instead of leaving a selection that stops inside hidden text.
+        let start = self
+            .inline_projection
+            .enclosing(range.start)
+            .map_or(range.start, |enclosing| enclosing.start);
+        let end = self
+            .inline_projection
+            .enclosing(range.end)
+            .map_or(range.end, |enclosing| enclosing.end);
+        self.selected_range = (start..end).into();
         self.selected_word_range = Some(self.selected_range);
         cx.notify()
     }

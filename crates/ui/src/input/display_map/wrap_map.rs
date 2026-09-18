@@ -136,6 +136,11 @@ impl WrapMap {
         self.wrapper.reset_text(text, cx);
     }
 
+    /// Byte ranges a soft wrap must keep whole. Must be sorted and disjoint.
+    pub fn set_unbreakable(&mut self, ranges: Vec<Range<usize>>) {
+        self.wrapper.set_unbreakable(ranges);
+    }
+
     /// Get access to the underlying wrapper (for rendering/hit-testing)
     pub(crate) fn wrapper(&self) -> &TextWrapper {
         &self.wrapper

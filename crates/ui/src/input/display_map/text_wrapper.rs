@@ -129,6 +129,14 @@ pub(crate) struct TextWrapper {
     /// The lines by split \n
     pub(crate) lines: SumTree<LineItem>,
 
+    /// Byte ranges of the text that a soft wrap must never split, sorted and disjoint.
+    ///
+    /// CDXC:SessionChat 2026-09-18 WHY:
+    /// A composer reference pill is one inline-block in the React composer, so it either fits on a
+    /// row or moves to the next one whole. Its padding uses a thin space, which this wrapper reads
+    /// as a break opportunity, so without this the pill broke between its icon and its label.
+    unbreakable: Vec<Range<usize>>,
+
     _initialized: bool,
 }
 
@@ -141,6 +149,7 @@ impl TextWrapper {
             font_size,
             wrap_width,
             lines: SumTree::new(&()),
+            unbreakable: Vec::new(),
             _initialized: false,
         }
     }
@@ -148,6 +157,19 @@ impl TextWrapper {
     #[inline]
     pub(crate) fn set_default_text(&mut self, text: &Rope) {
         self.text = text.clone();
+    }
+
+    /// Byte ranges of the text that a soft wrap must keep whole. Must be sorted and disjoint.
+    pub(crate) fn set_unbreakable(&mut self, ranges: Vec<Range<usize>>) {
+        self.unbreakable = ranges;
+    }
+
+    /// The start of the unbreakable range that `offset` falls strictly inside, if any.
+    fn unbreakable_start(&self, offset: usize) -> Option<usize> {
+        self.unbreakable
+            .iter()
+            .find(|range| offset > range.start && offset < range.end)
+            .map(|range| range.start)
     }
 
     /// Get reference to the rope text.
@@ -274,6 +296,47 @@ impl TextWrapper {
         );
     }
 
+    /// Pull every wrap boundary that lands inside an unbreakable run back to the run's start, and
+    /// re-wrap what follows so the shortened row does not push the next one past the wrap width.
+    ///
+    /// A run wider than the wrap width keeps the wrapper's own boundary: an unbreakable row that
+    /// can never fit has to break somewhere, and the alternative is a loop that never advances.
+    fn keep_runs_whole<F>(
+        &self,
+        line_str: &str,
+        line_start: usize,
+        wrap_width: Pixels,
+        boundaries: Vec<usize>,
+        wrap_line: &mut F,
+    ) -> Vec<usize>
+    where
+        F: FnMut(&str, Pixels) -> Vec<gpui::Boundary>,
+    {
+        let mut pending = boundaries;
+        let mut result: Vec<usize> = Vec::with_capacity(pending.len());
+        let mut cursor = 0;
+        loop {
+            let Some(&next) = pending.iter().find(|&&ix| ix > cursor) else {
+                return result;
+            };
+            let start = self.unbreakable_start(line_start + next);
+            let moved = start.map(|start| start - line_start).unwrap_or(next);
+            if moved <= cursor {
+                result.push(next);
+                cursor = next;
+                continue;
+            }
+            result.push(moved);
+            cursor = moved;
+            if moved != next {
+                pending = wrap_line(&line_str[moved..], wrap_width)
+                    .into_iter()
+                    .map(|boundary| moved + boundary.ix)
+                    .collect();
+            }
+        }
+    }
+
     fn _update<F>(
         &mut self,
         changed_text: &Rope,
@@ -303,17 +366,29 @@ impl TextWrapper {
         let wrap_width = self.wrap_width;
 
         // line not contains `\n`.
+        let mut line_offset = new_range.start;
         for line in Rope::from(changed_text.slice(new_range)).iter_lines() {
             let line_str = line.to_string();
+            let line_start = line_offset;
+            // +1 for the `\n` that `iter_lines` dropped.
+            line_offset += line.len() + 1;
             let mut wrapped_lines = SmallVec::<[Range<usize>; 1]>::new();
             let mut prev_boundary_ix = 0;
 
             // If wrap_width is Pixels::MAX, skip wrapping to disable word wrap
             if let Some(wrap_width) = wrap_width {
                 // Here only have wrapped line, if there is no wrap meet, the `line_wraps` result will empty.
-                for boundary in wrap_line(&line_str, wrap_width) {
-                    wrapped_lines.push(prev_boundary_ix..boundary.ix);
-                    prev_boundary_ix = boundary.ix;
+                let mut boundaries: Vec<usize> = wrap_line(&line_str, wrap_width)
+                    .into_iter()
+                    .map(|boundary| boundary.ix)
+                    .collect();
+                if !self.unbreakable.is_empty() {
+                    boundaries = self
+                        .keep_runs_whole(&line_str, line_start, wrap_width, boundaries, wrap_line);
+                }
+                for ix in boundaries {
+                    wrapped_lines.push(prev_boundary_ix..ix);
+                    prev_boundary_ix = ix;
                 }
             }
 

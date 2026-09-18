@@ -256,6 +256,11 @@ impl DisplayMap {
         self.rebuild_fold_projection();
     }
 
+    /// Byte ranges a soft wrap must keep whole. Must be sorted and disjoint.
+    pub fn set_unbreakable(&mut self, ranges: Vec<Range<usize>>) {
+        self.wrap_map.set_unbreakable(ranges);
+    }
+
     // ==================== Internal Helpers ====================
 
     /// Rebuild fold projection after wrap_map or fold state changes

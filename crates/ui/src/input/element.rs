@@ -738,9 +738,12 @@ impl TextElement {
         let spans = state.inline_projection.spans().to_vec();
         let line_height = last_layout.line_height;
         let origin = bounds.origin + point(last_layout.line_number_width, px(0.));
-        // The dotted rule sits 0.18em under the baseline, and the baseline is about 0.8em below
-        // the top of the text box, which is centred in the line box.
-        let underline_offset = (line_height - text_size).half() + text_size * 0.98;
+        // `text-underline-offset: 0.18em`, measured against Chromium's `auto` position, which is
+        // the baseline, and rounded to a whole pixel the way Chromium rounds the rule it draws.
+        // The baseline comes from the shaped line, with the ascent and descent rounded the way
+        // Chromium rounds them into a line box, so the rule lands on the row React draws it on.
+        let fallback_ascent = text_size * 0.8;
+        let fallback_descent = text_size * 0.2;
         let mut pills = Vec::new();
         let mut offset_y = last_layout.visible_top;
         for (vi, line) in last_layout.lines.iter().enumerate() {
@@ -767,10 +770,16 @@ impl TextElement {
                     origin + point(start.x, offset_y + start.y),
                     size(end.x - start.x, line_height),
                 );
+                let (ascent, descent) = line
+                    .wrapped_lines
+                    .first()
+                    .map(|shaped| (shaped.ascent.round(), shaped.descent.round()))
+                    .unwrap_or((fallback_ascent, fallback_descent));
+                let baseline = (line_height - ascent - descent).half() + ascent;
                 pills.push(ReferencePill {
                     hitbox: window.insert_hitbox(rect, HitboxBehavior::Normal),
                     bounds: rect,
-                    underline_y: rect.origin.y + underline_offset,
+                    underline_y: rect.origin.y + (baseline + text_size * 0.18).round(),
                     icon: span.replacement.icon.clone(),
                     icon_size: span.replacement.icon_size,
                     icon_inset: span.replacement.icon_inset,
@@ -1607,7 +1616,9 @@ impl Element for TextElement {
         let (display_text, text_color) = if is_empty {
             (
                 &Rope::from(placeholder.as_str()),
-                dim(state.placeholder_color.unwrap_or(cx.theme().muted_foreground)),
+                dim(state
+                    .placeholder_color
+                    .unwrap_or(cx.theme().muted_foreground)),
             )
         } else if state.masked {
             (
