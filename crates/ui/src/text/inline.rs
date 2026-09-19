@@ -221,6 +221,12 @@ impl Element for Inline {
         let is_selectable = text_view_state
             .as_ref()
             .is_some_and(|view| view.read(cx).is_selectable());
+        // `TextViewStyle::default_cursor`: the host wants the arrow left alone
+        // over this document, so neither the selection I-beam nor the link hand
+        // is asked for. Everything else about selection and links is unchanged.
+        let default_cursor = text_view_state
+            .as_ref()
+            .is_some_and(|view| view.read(cx).uses_default_cursor());
         let selection = match (&text_view_state, global_id) {
             (Some(view), Some(id)) if is_selectable => {
                 let all_selected = view.read(cx).is_all_selected();
@@ -255,7 +261,7 @@ impl Element for Inline {
         self.styled_text
             .paint(global_id, None, bounds, &mut (), &mut (), window, cx);
 
-        if is_selectable {
+        if is_selectable && !default_cursor {
             window.set_cursor_style(CursorStyle::IBeam, &hitbox);
         }
 
@@ -269,7 +275,7 @@ impl Element for Inline {
         let mouse_position = window.mouse_position();
         let hovered_link = Self::link_index_for_position(&text_layout, &self.links, mouse_position);
         state.hovered_index = hovered_link;
-        if hovered_link.is_some() {
+        if hovered_link.is_some() && !default_cursor {
             window.set_cursor_style(CursorStyle::PointingHand, &hitbox);
         }
 

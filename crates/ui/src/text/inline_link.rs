@@ -112,6 +112,7 @@ pub(super) fn element(
     id: usize,
     handler: Option<Arc<super::LinkClickFn>>,
     secondary: Option<Arc<super::LinkClickFn>>,
+    default_cursor: bool,
 ) -> AnyElement {
     let title = reference.title.clone();
     let url = link.url.clone();
@@ -127,7 +128,7 @@ pub(super) fn element(
         .items_center()
         .gap(reference.gap)
         .text_color(reference.color)
-        .cursor_pointer()
+        .when(!default_cursor, |this| this.cursor_pointer())
         .whitespace_nowrap()
         .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
         .child(

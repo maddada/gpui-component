@@ -83,6 +83,12 @@ pub struct TextViewStyle {
     /// gutter: the marker is pushed to the gutter's right edge and every item's
     /// text starts on one column.
     pub list_marker: StyleRefinement,
+    /// Leave the mouse cursor alone over this document: no I-beam over
+    /// selectable text, no pointing hand over a link, a decorated reference or a
+    /// linked image. Selection, link clicks and the link context menu are
+    /// unaffected; only the cursor shape is. Default `false`, which keeps the
+    /// usual text and link cursors.
+    pub default_cursor: bool,
     pub is_dark: bool,
 }
 
@@ -115,6 +121,7 @@ impl Default for TextViewStyle {
             table_head_cell: StyleRefinement::default(),
             list: StyleRefinement::default(),
             list_marker: StyleRefinement::default(),
+            default_cursor: false,
             is_dark: false,
         }
     }
@@ -158,6 +165,14 @@ impl TextViewStyle {
     /// Set extra style for each table cell.
     pub fn table_cell(mut self, style: StyleRefinement) -> Self {
         self.table_cell = style;
+        self
+    }
+
+    /// Keep the plain arrow cursor over the whole document: over selectable
+    /// text, over links, over decorated references and over linked images.
+    /// Selection and clicks keep working; only the cursor shape changes.
+    pub fn default_cursor(mut self, default_cursor: bool) -> Self {
+        self.default_cursor = default_cursor;
         self
     }
 }

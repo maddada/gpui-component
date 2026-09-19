@@ -363,6 +363,12 @@ impl TextViewState {
         self.selectable
     }
 
+    /// Whether [`TextViewStyle::default_cursor`] asked this document to leave
+    /// the mouse cursor on the plain arrow.
+    pub(crate) fn uses_default_cursor(&self) -> bool {
+        self.text_view_style.default_cursor
+    }
+
     pub(crate) fn is_all_selected(&self) -> bool {
         self.select_all
     }

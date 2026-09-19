@@ -702,7 +702,10 @@ impl CodeBlock {
     /// The palette is resolved here rather than when the document was parsed, so
     /// a view can hand the block its own theme (`TextViewStyle::highlight_theme`)
     /// and a later theme switch restyles the block without reparsing it.
-    pub(crate) fn styles(&self, theme: &Arc<HighlightTheme>) -> Vec<(Range<usize>, HighlightStyle)> {
+    pub(crate) fn styles(
+        &self,
+        theme: &Arc<HighlightTheme>,
+    ) -> Vec<(Range<usize>, HighlightStyle)> {
         let Some(lang) = &self.lang else {
             return Vec::new();
         };
@@ -959,6 +962,7 @@ impl Paragraph {
             )
             .with_link_click(node_cx.link_click.clone())
             .with_link_secondary_click(node_cx.link_secondary_click.clone())
+            .with_default_cursor(node_cx.style.default_cursor)
             .with_inline_code(node_cx.style.inline_code.clone(), {
                 let mut offset = 0;
                 let mut ranges = Vec::new();
@@ -1016,7 +1020,8 @@ impl Paragraph {
                         .when_some(image.link.clone(), |this, link| {
                             let title = image.title();
                             let handler = node_cx.link_click.clone();
-                            this.cursor_pointer()
+                            let default_cursor = node_cx.style.default_cursor;
+                            this.when(!default_cursor, |this| this.cursor_pointer())
                                 .tooltip(move |window, cx| {
                                     Tooltip::new(title.clone()).build(window, cx)
                                 })

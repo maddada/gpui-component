@@ -28,6 +28,9 @@ pub(super) struct InlineFlow {
     items: Vec<InlineFlowItem>,
     link_click: Option<Arc<super::LinkClickFn>>,
     link_secondary_click: Option<Arc<super::LinkClickFn>>,
+    /// [`TextViewStyle::default_cursor`]: keep the plain arrow over decorated
+    /// references and linked images instead of the pointing hand.
+    default_cursor: bool,
     selection_states: Arc<Mutex<Vec<Arc<Mutex<InlineState>>>>>,
 }
 
@@ -125,12 +128,19 @@ impl InlineFlow {
             items,
             link_click: None,
             link_secondary_click: None,
+            default_cursor: false,
             selection_states,
         }
     }
 
     pub(super) fn with_link_click(mut self, handler: Option<Arc<super::LinkClickFn>>) -> Self {
         self.link_click = handler;
+        self
+    }
+
+    /// See [`TextViewStyle::default_cursor`].
+    pub(super) fn with_default_cursor(mut self, default_cursor: bool) -> Self {
+        self.default_cursor = default_cursor;
         self
     }
 
@@ -182,6 +192,7 @@ impl InlineFlow {
         title: &str,
         size: Size<Pixels>,
         handler: Option<Arc<super::LinkClickFn>>,
+        default_cursor: bool,
     ) -> AnyElement {
         img(url.clone())
             .id(ix)
@@ -191,7 +202,7 @@ impl InlineFlow {
             .h(size.height)
             .when_some(link.clone(), |this, link| {
                 let title = title.to_string();
-                this.cursor_pointer()
+                this.when(!default_cursor, |this| this.cursor_pointer())
                     .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
                     .on_click(move |event, window, cx| {
                         window.end_text_selection(cx);
@@ -372,6 +383,7 @@ impl Element for InlineFlow {
                             elements.len(),
                             self.link_click.clone(),
                             self.link_secondary_click.clone(),
+                            self.default_cursor,
                         )
                     } else if let InlineFlowItem::Text {
                         code: Some(code),
@@ -424,6 +436,7 @@ impl Element for InlineFlow {
                         title.as_str(),
                         fragment_size,
                         self.link_click.clone(),
+                        self.default_cursor,
                     );
                     element.prepaint_as_root(
                         bounds.origin + origin,
