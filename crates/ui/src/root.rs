@@ -453,6 +453,17 @@ impl Root {
         Some(root.read(cx).tooltip_overlay.clone())
     }
 
+    /// Dismiss the window's managed tooltip and cancel any pending show.
+    ///
+    /// A managed tooltip only hides on its trigger's hover-leave, which never
+    /// arrives when the trigger is removed from the tree while hovered; callers
+    /// that remove a trigger (a view switch, a closing menu) dismiss it here.
+    pub fn hide_tooltip(window: &Window, cx: &mut App) {
+        if let Some(overlay) = Self::tooltip_overlay(window, cx) {
+            overlay.update(cx, |overlay, cx| overlay.hide(cx));
+        }
+    }
+
     /// Get the fallback native-menu overlay entity for this window.
     pub(crate) fn native_menu_overlay(
         window: &Window,
