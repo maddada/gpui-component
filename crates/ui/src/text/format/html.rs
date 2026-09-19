@@ -500,9 +500,13 @@ fn parse_node(
             local_name!("ul") | local_name!("ol") => {
                 let ordered = name.local == local_name!("ol");
                 let children = consume_children_nodes(node, paragraph, cx);
+                let start = attr_value(attrs, local_name!("start"))
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap_or(1);
                 Some(BlockNode::List {
                     children,
                     ordered,
+                    start,
                     span: None,
                 })
             }

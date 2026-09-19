@@ -58,6 +58,8 @@ pub(crate) enum BlockNode {
         /// Only contains ListItem, others will be ignored
         children: Vec<BlockNode>,
         ordered: bool,
+        /// The number an ordered list's first item carries (`3.` starts at 3); 1 when unset.
+        start: usize,
         span: Option<Span>,
     },
     ListItem {
@@ -1311,13 +1313,16 @@ impl BlockNode {
                     .join("\n")
             }
             BlockNode::List {
-                children, ordered, ..
+                children,
+                ordered,
+                start,
+                ..
             } => children
                 .iter()
                 .enumerate()
                 .map(|(i, child)| {
                     let prefix = if *ordered {
-                        format!("{}. ", i + 1)
+                        format!("{}. ", i + start)
                     } else {
                         "- ".to_string()
                     };
@@ -1907,14 +1912,17 @@ impl BlockNode {
                 )
                 .into_any_element(),
             BlockNode::List {
-                children, ordered, ..
+                children,
+                ordered,
+                start,
+                ..
             } => v_flex()
                 .id((if *ordered { "ol" } else { "ul" }, ix))
                 .pb(mb)
                 .refine_style(&node_cx.style.list)
                 .children({
                     let mut items = Vec::with_capacity(children.len());
-                    let mut item_index = 0;
+                    let mut item_index = start.saturating_sub(1);
                     for (ix, item) in children.into_iter().enumerate() {
                         let is_item = item.is_list_item();
 

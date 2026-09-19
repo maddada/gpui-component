@@ -378,6 +378,7 @@ fn ast_to_node(
                 .collect();
             BlockNode::List {
                 ordered: list.ordered,
+                start: list.start.map_or(1, |start| start as usize),
                 children,
                 span: new_span(list.position, cx),
             }
