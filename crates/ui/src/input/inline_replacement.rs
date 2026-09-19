@@ -123,6 +123,42 @@ impl InlineProjection {
         true
     }
 
+    /// Carry the projection across an edit that replaced `edited` with `inserted_len` bytes, then
+    /// rebuild it from `text`. Returns whether there was a projection to carry.
+    ///
+    /// CDXC:SessionChat 2026-09-19 WHY:
+    /// Dropping the projection on every edit and waiting for the host to set it again showed the
+    /// raw markdown source for a frame whenever the host could not answer within that paint, which
+    /// read as the pills flickering open while typing fast. A replacement the edit did not touch
+    /// is still the same reference, so it moves with the text the way an atomic pill node does in
+    /// the React composer; only a replacement the edit cut into is dropped, and the host's next
+    /// `set_inline_replacements` remains the authority.
+    pub(super) fn apply_edit(
+        &mut self,
+        text: &Rope,
+        edited: &Range<usize>,
+        inserted_len: usize,
+    ) -> bool {
+        if self.replacements.is_empty() && self.spans.is_empty() {
+            return false;
+        }
+        let mut replacements = std::mem::take(&mut self.replacements);
+        replacements.retain_mut(|replacement| {
+            let range = &mut replacement.range;
+            if range.end <= edited.start {
+                return true;
+            }
+            if range.start < edited.end {
+                return false;
+            }
+            range.start = range.start - edited.len() + inserted_len;
+            range.end = range.end - edited.len() + inserted_len;
+            true
+        });
+        self.rebuild(text, replacements);
+        true
+    }
+
     /// Rebuild the projected text from `text`.
     ///
     /// Replacements that overlap each other, leave the buffer, split a character, or cross a line

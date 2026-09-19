@@ -396,6 +396,10 @@ pub struct InputState {
     pub(crate) scroll_size: gpui::Size<Pixels>,
     pub(super) editor_scrollbar_paddings: Cell<Edges<Pixels>>,
     pub(super) editor_scrollbar_snapshot: Cell<Option<EditorScrollbarSnapshot>>,
+    /// Track and thumb thickness for the editor's scrollbar, set by [`super::Input::scrollbar_thickness`].
+    pub(super) editor_scrollbar_thickness: Cell<Option<Pixels>>,
+    /// Reveal mode for the editor's scrollbar, set by [`super::Input::scrollbar_show`].
+    pub(super) editor_scrollbar_show: Cell<Option<crate::scroll::ScrollbarShow>>,
     pub(super) text_align: TextAlign,
 
     /// The mask pattern for formatting the input text
@@ -530,6 +534,8 @@ impl InputState {
                 left: px(0.),
             }),
             editor_scrollbar_snapshot: Cell::new(None),
+            editor_scrollbar_thickness: Cell::new(None),
+            editor_scrollbar_show: Cell::new(None),
             deferred_scroll_offset: None,
             preferred_column: None,
             placeholder: SharedString::default(),
@@ -734,8 +740,9 @@ impl InputState {
     /// Draw the given source ranges as compact glyph runs instead of their own text.
     ///
     /// The buffer keeps the original text, so the value, the clipboard, and undo are unchanged;
-    /// only wrapping, hit testing, and painting use the shortened string. Replacements are dropped
-    /// whenever the text is edited, so the caller re-sets them from its own render pass.
+    /// only wrapping, hit testing, and painting use the shortened string. Replacements an edit leaves
+    /// intact move with the text and one the edit cuts into is dropped, so the caller re-sets them
+    /// from its own render pass to pick up references the edit created or changed.
     ///
     /// CDXC:SessionChat 2026-09-18 WHY:
     /// Ghostex composers show markdown references as pills, and doing that with an overlay or by
@@ -755,6 +762,35 @@ impl InputState {
         self.display_map.reset_text(&display_text, cx);
         self.mode.update_auto_grow(&self.display_map);
         cx.notify();
+    }
+
+    /// Move the inline replacements with an edit that replaced `range` with `inserted_len` bytes
+    /// and point the display map at the result. Returns false when there is no projection, so the
+    /// caller takes the incremental path.
+    ///
+    /// `rewritten` means the whole text was rewritten (a mask regrouped it), so no offset survives
+    /// and the projection is dropped until the host sets it again.
+    fn carry_inline_replacements(
+        &mut self,
+        range: &Range<usize>,
+        inserted_len: usize,
+        rewritten: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let carried = if rewritten {
+            self.inline_projection.clear()
+        } else {
+            self.inline_projection
+                .apply_edit(&self.text, range, inserted_len)
+        };
+        if !carried {
+            return false;
+        }
+        let display_text = self.display_text().clone();
+        self.display_map
+            .set_unbreakable(self.inline_projection.display_ranges());
+        self.display_map.reset_text(&display_text, cx);
+        true
     }
 
     /// The text that layout, hit testing, and painting run on.
@@ -3030,13 +3066,7 @@ impl EntityInputHandler for InputState {
         // Adjust folds before updating wrap map: remove overlapping folds and shift others
         self.display_map
             .adjust_folds_for_edit(&old_text, &range, new_text);
-        // The projection was built from offsets this edit just moved, so drop it and let the
-        // host re-set it from its next render. Until then the display map holds the buffer text.
-        if self.inline_projection.clear() {
-            let text = self.text.clone();
-            self.display_map.set_unbreakable(Vec::new());
-            self.display_map.reset_text(&text, cx);
-        } else {
+        if !self.carry_inline_replacements(&range, new_text.len(), mask_changed, cx) {
             self.display_map
                 .on_text_changed(&self.text, &range, &Rope::from(new_text), cx);
         }
@@ -3112,13 +3142,7 @@ impl EntityInputHandler for InputState {
         // Adjust folds before updating wrap map: remove overlapping folds and shift others
         self.display_map
             .adjust_folds_for_edit(&old_text, &range, new_text);
-        // The projection was built from offsets this edit just moved, so drop it and let the
-        // host re-set it from its next render. Until then the display map holds the buffer text.
-        if self.inline_projection.clear() {
-            let text = self.text.clone();
-            self.display_map.set_unbreakable(Vec::new());
-            self.display_map.reset_text(&text, cx);
-        } else {
+        if !self.carry_inline_replacements(&range, new_text.len(), false, cx) {
             self.display_map
                 .on_text_changed(&self.text, &range, &Rope::from(new_text), cx);
         }

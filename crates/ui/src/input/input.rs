@@ -3,7 +3,7 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, DefiniteLength, Edges, EdgesRefinement, Entity, Hsla, InteractiveElement as _,
-    IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Rems, RenderOnce, Role,
+    IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Pixels, Rems, RenderOnce, Role,
     StatefulInteractiveElement as _, StyleRefinement, Styled, TextAlign, Window, div, px, relative,
 };
 
@@ -53,6 +53,8 @@ pub struct Input {
     content_type: Option<InputContentType>,
     role: Option<Role>,
     aria_label: Option<gpui::SharedString>,
+    scrollbar_thickness: Option<Pixels>,
+    scrollbar_show: Option<crate::scroll::ScrollbarShow>,
 
     /// An optional context menu builder to allow a custom context menu on the input.
     ///
@@ -100,8 +102,25 @@ impl Input {
             content_type: None,
             role: None,
             aria_label: None,
+            scrollbar_thickness: None,
+            scrollbar_show: None,
             context_menu_builder: None,
         }
+    }
+
+    /// Set the track and thumb thickness of the editor's scrollbar.
+    ///
+    /// Like [`crate::scroll::Scrollbar::thickness`], a custom thickness uses the full track width
+    /// without the default inset. Unset keeps the component's own metrics.
+    pub fn scrollbar_thickness(mut self, thickness: impl Into<Pixels>) -> Self {
+        self.scrollbar_thickness = Some(thickness.into());
+        self
+    }
+
+    /// Set the reveal mode of the editor's scrollbar, overriding `cx.theme().scrollbar_show`.
+    pub fn scrollbar_show(mut self, scrollbar_show: crate::scroll::ScrollbarShow) -> Self {
+        self.scrollbar_show = Some(scrollbar_show);
+        self
     }
 
     /// Override the placeholder color independently of the input text.
@@ -403,6 +422,8 @@ impl RenderOnce for Input {
 
         let prefix = self.prefix;
         let suffix = self.suffix;
+        let scrollbar_thickness = self.scrollbar_thickness;
+        let scrollbar_show = self.scrollbar_show;
         let show_clear_button = self.cleanable
             && !state.disabled
             && !state.loading
@@ -531,6 +552,8 @@ impl RenderOnce for Input {
             }))
             .when(state.mode.is_multi_line(), |mut this| {
                 let paddings = this.style().padding.clone();
+                state.editor_scrollbar_thickness.set(scrollbar_thickness);
+                state.editor_scrollbar_show.set(scrollbar_show);
                 this.child(Self::render_editor(paddings, &self.state, &state, window))
             })
             .when(!state.mode.is_multi_line(), |this| {

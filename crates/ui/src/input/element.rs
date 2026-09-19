@@ -1,5 +1,6 @@
 use gpui::Corners;
 use gpui::Half;
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, Bounds, Edges, Element, ElementId, ElementInputHandler, Entity,
     GlobalElementId,
@@ -168,6 +169,12 @@ impl Element for EditorScrollbar {
             Scrollbar::vertical(&scroll_handle)
         }
         .scroll_size(snapshot.layout.scroll_size)
+        .when_some(state.editor_scrollbar_thickness.get(), |this, thickness| {
+            this.thickness(thickness)
+        })
+        .when_some(state.editor_scrollbar_show.get(), |this, show| {
+            this.scrollbar_show(show)
+        })
         .into_any_element();
 
         scrollbar.prepaint_as_root(
@@ -375,6 +382,12 @@ impl TextElement {
         let cursor_row = state.text.offset_to_point(cursor).row;
         let sel_start_row = state.text.offset_to_point(selected_range.start).row;
         let sel_end_row = state.text.offset_to_point(selected_range.end).row;
+        // CDXC:SessionChat 2026-09-19 WHY:
+        // `paint` records the selection in buffer offsets, so the "did the caret move" test below
+        // has to use the buffer range too. Comparing the display range made a caret that follows
+        // an inline replacement look moved on every frame, which pulled the scroll back to the
+        // caret and made the wheel unable to move it out of view.
+        let buffer_selected_range = selected_range;
         selected_range.start = state.display_offset(selected_range.start);
         selected_range.end = state.display_offset(selected_range.end);
         cursor = state.display_offset(cursor);
@@ -414,7 +427,7 @@ impl TextElement {
         let cursor_end = caret_for(sel_end_row, selected_range.end, false);
 
         let cursor_bounds = {
-            let selection_changed = state.last_selected_range != Some(selected_range);
+            let selection_changed = state.last_selected_range != Some(buffer_selected_range);
             let auto_scrolling = state.auto_scroll.is_active();
             if selection_changed && !is_selected_all {
                 // For Right alignment use 0 margin: cursor is clamped to bounds separately,
@@ -440,16 +453,19 @@ impl TextElement {
                 // Vertical cursor-follow is suppressed while auto-scroll manages the y axis,
                 // to prevent fighting the background scroll task.
                 if !auto_scrolling {
-                    // If we change the scroll_offset.y, GPUI will render and trigger the next run loop.
-                    // So, here we just adjust offset by `line_height` for move smooth.
+                    // CDXC:SessionChat 2026-09-19 DECISION:
+                    // User: typing while the caret is scrolled out of view must bring it back
+                    // at once. This used to step one line per frame, and because the follow only
+                    // runs on a frame where the caret moved, a caret far out of view crept back
+                    // one line per typed character.
                     scroll_offset.y = if scroll_offset.y + cursor_pos.y
                         > bounds.size.height - top_bottom_margin
                     {
                         // cursor is out of bottom
-                        scroll_offset.y - line_height
+                        bounds.size.height - top_bottom_margin - cursor_pos.y
                     } else if scroll_offset.y + cursor_pos.y < top_bottom_margin {
                         // cursor is out of top
-                        (scroll_offset.y + line_height).min(px(0.))
+                        (top_bottom_margin - cursor_pos.y).min(px(0.))
                     } else {
                         scroll_offset.y
                     };
