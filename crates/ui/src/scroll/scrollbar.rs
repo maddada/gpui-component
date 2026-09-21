@@ -172,6 +172,8 @@ impl ScrollbarStateInner {
     fn with_unset_drag_pos(&self) -> Self {
         let mut state = *self;
         state.dragged_axis = None;
+        // A drag is the reader scrolling: the bar fades from the release, wherever the pointer is.
+        state.last_scroll_time = Some(Instant::now());
         state
     }
 
@@ -310,6 +312,8 @@ pub struct Scrollbar {
     thickness: Option<Pixels>,
     scroll_handle: Rc<dyn ScrollbarHandle>,
     scroll_size: Option<Size<Pixels>>,
+    /// See [`Scrollbar::shown_by_host_scroll`].
+    host_scroll_time: Option<Option<Instant>>,
     /// Maximum frames per second for scrolling by drag. Default is 120 FPS.
     ///
     /// This is used to limit the update rate of the scrollbar when it is
@@ -332,6 +336,7 @@ impl Scrollbar {
             scroll_handle: Rc::new(scroll_handle.clone()),
             max_fps: 120,
             scroll_size: None,
+            host_scroll_time: None,
         }
     }
 
@@ -374,6 +379,17 @@ impl Scrollbar {
     /// Default will sync the `content_size` from `scroll_handle`.
     pub fn scroll_size(mut self, scroll_size: Size<Pixels>) -> Self {
         self.scroll_size = Some(scroll_size);
+        self
+    }
+
+    /// Let the host say when the reader scrolled, instead of showing the bar on every offset change.
+    ///
+    /// An offset also moves when content grows under a list that follows its tail, which is not
+    /// the reader scrolling. With this set, an offset change alone moves the thumb without showing
+    /// it; the bar shows from `scrolled_at` (the host's last user scroll), from the pointer being
+    /// on it, and while it is dragged.
+    pub fn shown_by_host_scroll(mut self, scrolled_at: Option<Instant>) -> Self {
+        self.host_scroll_time = Some(scrolled_at);
         self
     }
 
@@ -563,6 +579,12 @@ impl Element for Scrollbar {
             .read(cx)
             .clone();
 
+        if let Some(Some(scrolled_at)) = self.host_scroll_time
+            && state.get().last_scroll_time.is_none_or(|t| t < scrolled_at)
+        {
+            state.set(state.get().with_last_scroll_time(Some(scrolled_at)));
+        }
+
         let mut states = vec![];
         let mut has_both = self.axis.is_both();
         let width = self.thickness.unwrap_or(WIDTH);
@@ -633,7 +655,8 @@ impl Element for Scrollbar {
             let is_hover_to_show = scrollbar_show.is_hover();
             let is_hovered_on_bar = state.get().hovered_axis == Some(axis);
             let is_hovered_on_thumb = state.get().hovered_on_thumb == Some(axis);
-            let is_offset_changed = state.get().last_scroll_offset != self.scroll_handle.offset();
+            let is_offset_changed = self.host_scroll_time.is_none()
+                && state.get().last_scroll_offset != self.scroll_handle.offset();
 
             let (thumb_bg, bar_bg, bar_border, thumb_width, inset, radius) =
                 if state.get().dragged_axis == Some(axis) {
@@ -774,10 +797,15 @@ impl Element for Scrollbar {
 
         // Update last_scroll_time when offset is changed.
         if self.scroll_handle.offset() != scrollbar_state.get().last_scroll_offset {
+            let last_scroll_time = if self.host_scroll_time.is_some() {
+                scrollbar_state.get().last_scroll_time
+            } else {
+                Some(Instant::now())
+            };
             scrollbar_state.set(
                 scrollbar_state
                     .get()
-                    .with_last_scroll(self.scroll_handle.offset(), Some(Instant::now())),
+                    .with_last_scroll(self.scroll_handle.offset(), last_scroll_time),
             );
             cx.notify(view_id);
         }
