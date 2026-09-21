@@ -28,6 +28,8 @@ pub struct InlineReplacement {
     pub icon_inset: Pixels,
     /// Whether hovering the replacement shows a hand cursor because a click does something.
     pub pointer: bool,
+    /// Text the window's tooltip shows while the pointer rests on the replacement.
+    pub tooltip: Option<SharedString>,
 }
 
 impl InlineReplacement {
@@ -40,6 +42,7 @@ impl InlineReplacement {
             icon_size: px(0.),
             icon_inset: px(0.),
             pointer: false,
+            tooltip: None,
         }
     }
 
@@ -57,6 +60,16 @@ impl InlineReplacement {
 
     pub fn pointer(mut self, pointer: bool) -> Self {
         self.pointer = pointer;
+        self
+    }
+
+    /// Show `tooltip` while the pointer rests on the replacement.
+    ///
+    /// The source a pill stands for is not on screen, so the destination it points at is only
+    /// readable through this; the input drives the window's managed tooltip from the pill's own
+    /// hitbox because a replacement is painted text, not an element that could carry a tooltip.
+    pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
+        self.tooltip = Some(tooltip.into());
         self
     }
 }

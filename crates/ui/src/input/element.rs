@@ -22,6 +22,7 @@ use crate::{
     button::{Button, ButtonVariants as _},
     input::{RopeExt as _, blink_cursor::CURSOR_WIDTH, display_map::LineLayout},
     scroll::Scrollbar,
+    tooltip::Tooltip,
 };
 
 use super::{InputState, LastLayout, WhitespaceIndicators, mode::InputMode};
@@ -32,6 +33,9 @@ pub(super) const LINE_NUMBER_RIGHT_MARGIN: Pixels = px(10.);
 const FOLD_ICON_WIDTH: Pixels = px(14.);
 const FOLD_ICON_HITBOX_WIDTH: Pixels = px(18.);
 const MAX_HIGHLIGHT_LINE_LENGTH: usize = 10_000;
+/// `24rem`, the measure every tooltip in the app wraps at, so a long destination reads as a
+/// paragraph instead of one line across the whole window.
+const REFERENCE_PILL_TOOLTIP_MAX_WIDTH: Pixels = px(384.);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct EditorScrollbarLayout {
@@ -298,6 +302,7 @@ struct ReferencePill {
     icon_inset: Pixels,
     color: Hsla,
     pointer: bool,
+    tooltip: Option<SharedString>,
 }
 
 pub(super) struct TextElement {
@@ -801,11 +806,61 @@ impl TextElement {
                     icon_inset: span.replacement.icon_inset,
                     color: if disabled { color.opacity(0.5) } else { color },
                     pointer: span.replacement.pointer && !disabled,
+                    tooltip: span.replacement.tooltip.clone(),
                 });
             }
             offset_y += line.size(line_height).height;
         }
         pills
+    }
+
+    /// Show the hovered replacement's tooltip through the window's managed tooltip overlay.
+    ///
+    /// A replacement is painted text inside this element, so it cannot carry `.tooltip()` the way
+    /// an element does; the overlay is driven from the pill's own hitbox instead, which is also
+    /// what paints its hover rule. The pill bounds are the trigger, so a tooltip follows a pill
+    /// that moves with an edit.
+    fn sync_reference_pill_tooltip(
+        &self,
+        pills: &[ReferencePill],
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let hovered = pills.iter().find_map(|pill| {
+            let tooltip = pill.tooltip.clone()?;
+            pill.hitbox
+                .is_hovered(window)
+                .then_some((tooltip, pill.bounds))
+        });
+        let state = self.state.read(cx);
+        let shown = state.inline_replacement_tooltip.take();
+        if shown == hovered {
+            state.inline_replacement_tooltip.set(shown);
+            return;
+        }
+        state.inline_replacement_tooltip.set(hovered.clone());
+        let Some(overlay) = Root::tooltip_overlay(window, cx) else {
+            return;
+        };
+        if let Some((_, bounds)) = shown {
+            overlay.update(cx, |overlay, cx| {
+                overlay.request_hide(bounds, false, window, cx)
+            });
+        }
+        if let Some((tooltip, bounds)) = hovered {
+            overlay.update(cx, |overlay, cx| {
+                overlay.show_for_bounds(
+                    bounds,
+                    move |window, cx| {
+                        Tooltip::new(tooltip.clone())
+                            .max_w(REFERENCE_PILL_TOOLTIP_MAX_WIDTH)
+                            .build(window, cx)
+                    },
+                    window,
+                    cx,
+                )
+            });
+        }
     }
 
     fn layout_document_colors(
@@ -2267,6 +2322,7 @@ impl Element for TextElement {
                 x += px(2.);
             }
         }
+        self.sync_reference_pill_tooltip(&prepaint.reference_pills, window, cx);
 
         // Paint blinking cursor
         if focused && show_cursor {

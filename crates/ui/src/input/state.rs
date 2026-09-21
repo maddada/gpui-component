@@ -412,6 +412,8 @@ pub struct InputState {
     pub(super) placeholder_color: Option<gpui::Hsla>,
     /// Source spans drawn as compact glyph runs instead of their own text.
     pub(super) inline_projection: InlineProjection,
+    /// The replacement tooltip the window is showing, and the pill bounds it is anchored to.
+    pub(super) inline_replacement_tooltip: Cell<Option<(SharedString, Bounds<Pixels>)>>,
 
     /// Popover
     diagnostic_popover: Option<Entity<DiagnosticPopover>>,
@@ -541,6 +543,7 @@ impl InputState {
             placeholder: SharedString::default(),
             placeholder_color: None,
             inline_projection: InlineProjection::default(),
+            inline_replacement_tooltip: Cell::new(None),
             mask_pattern: MaskPattern::default(),
             mask_pattern_set: false,
             text_align: TextAlign::Left,
@@ -2071,8 +2074,20 @@ impl InputState {
 
         let row = point.row;
 
-        // Calculate row offset by multiplying the number of lines before it with the line height
-        let mut row_offset_y = line_height * self.display_map.buffer_line_to_display_row(row);
+        // CDXC:SessionChat 2026-09-21 WHY:
+        // The row and the scrollable height come from the display map, which an edit updates at
+        // once, not from `last_layout` and `scroll_size`, which still describe the text before
+        // it. Reading the stale pair after a paste clamped the target to the old content height,
+        // so a long paste left the caret below the visible rows.
+        let wrap_row = self
+            .display_map
+            .offset_to_wrap_display_point(self.display_offset(offset))
+            .row;
+        let display_row = self
+            .display_map
+            .wrap_row_to_display_row(wrap_row)
+            .unwrap_or_else(|| self.display_map.nearest_visible_display_row(wrap_row));
+        let row_offset_y = line_height * display_row;
 
         // For Right alignment use 0 margin: the cursor indicator is clamped inside bounds
         // in layout_cursor, so shifting the text here would cause a first-click visual jump.
@@ -2089,7 +2104,6 @@ impl InputState {
             if let Some(pos) = line.position_for_index(column, last_layout, false) {
                 let bounds_width = bounds.size.width - last_layout.line_number_width;
                 let col_offset_x = pos.x;
-                row_offset_y += pos.y;
                 if col_offset_x - safety_margin < -scroll_offset.x {
                     // If the position is out of the visible area, scroll to make it visible
                     scroll_offset.x = -col_offset_x + safety_margin;
@@ -2131,7 +2145,9 @@ impl InputState {
         // Clamp the deferred target into the same safe range that
         // `update_scroll_offset` enforces on persist, so paint never shows an
         // over-scrolled frame before the post-paint clamp pulls it back.
-        let safe_y_min = (-self.scroll_size.height + self.input_bounds.size.height).min(px(0.));
+        let content_height = (line_height * self.display_map.display_row_count())
+            .max(self.scroll_size.height);
+        let safe_y_min = (-content_height + self.input_bounds.size.height).min(px(0.));
         scroll_offset.x = scroll_offset.x.min(px(0.));
         scroll_offset.y = scroll_offset.y.clamp(safe_y_min, px(0.));
         self.deferred_scroll_offset = Some(scroll_offset);
