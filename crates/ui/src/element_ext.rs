@@ -52,6 +52,11 @@ pub trait ElementExt: ParentElement + Sized {
                 |_, _, _, _| {},
             )
             .absolute()
+            // Pinned to the corner: without insets an absolute child keeps its static
+            // position, which in a block parent is below the parent's text, so the
+            // reported bounds sat one line lower than the element.
+            .top_0()
+            .left_0()
             .size_full(),
         )
     }
