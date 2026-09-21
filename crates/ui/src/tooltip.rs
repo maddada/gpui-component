@@ -1,10 +1,11 @@
 use std::{cell::Cell, rc::Rc, time::Duration};
 
 use gpui::{
-    Action, AnyElement, AnyView, App, AppContext, Bounds, Context, Display, Element, ElementId,
+    Action, AnyElement, AnyView, App, AppContext, Bounds, Context, DispatchPhase, Display, Element,
+    ElementId, MouseDownEvent, MouseMoveEvent, ScrollWheelEvent,
     GlobalElementId, Half, InspectorElementId, IntoElement, LayoutId, MouseButton, ParentElement,
     Pixels, Point, Position, Render, SharedString, Size, StatefulInteractiveElement, Style,
-    StyleRefinement, Styled, Task, Window, deferred, div, point, prelude::FluentBuilder, px,
+    StyleRefinement, Styled, Task, Window, canvas, deferred, div, point, prelude::FluentBuilder, px,
 };
 
 use crate::{
@@ -165,12 +166,20 @@ pub enum ManagedTooltipPlacement {
     Left,
     /// Place the tooltip to the right, vertically centered on the trigger.
     Right,
+    /// Place the tooltip beside the trigger, vertically centered on it, on whichever side has more
+    /// room in the window. For a trigger in a row whose neighbours above and below are covered by
+    /// something the tooltip cannot draw over, so it must stay in that row.
+    WiderSide,
     /// Place the tooltip below the trigger, horizontally centered on it.
     Below,
     /// Place the tooltip below the trigger with their right edges aligned.
     BelowLeft,
     /// Place the tooltip below the trigger with their left edges aligned.
     BelowRight,
+    /// Place the tooltip below the trigger with their left edges aligned, then
+    /// shift it horizontally so it stays between `left` and `right` (window
+    /// coordinates). Keeps a tooltip inside the panel that owns its trigger.
+    BelowWithin { left: Pixels, right: Pixels },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -247,6 +256,24 @@ fn tooltip_overlay_position_with_placement(
             Bounds::new(point(trigger_bounds.right(), centered_y), tooltip_size),
             TooltipPlacement::Right,
         ),
+        ManagedTooltipPlacement::WiderSide => {
+            let room_left = trigger_bounds.left();
+            let room_right = viewport_size.width - trigger_bounds.right();
+            if room_right >= room_left {
+                (
+                    Bounds::new(point(trigger_bounds.right(), centered_y), tooltip_size),
+                    TooltipPlacement::Right,
+                )
+            } else {
+                (
+                    Bounds::new(
+                        point(trigger_bounds.left() - tooltip_size.width, centered_y),
+                        tooltip_size,
+                    ),
+                    TooltipPlacement::Left,
+                )
+            }
+        }
         ManagedTooltipPlacement::Below => (
             Bounds::new(
                 point(
@@ -274,6 +301,14 @@ fn tooltip_overlay_position_with_placement(
             ),
             TooltipPlacement::BelowRight,
         ),
+        ManagedTooltipPlacement::BelowWithin { left, right } => {
+            let max_x = (right - tooltip_size.width).max(left);
+            let x = trigger_bounds.left().min(max_x).max(left);
+            (
+                Bounds::new(point(x, trigger_bounds.bottom()), tooltip_size),
+                TooltipPlacement::BelowRight,
+            )
+        }
     };
 
     TooltipOverlayPosition {
@@ -508,8 +543,14 @@ impl TooltipOverlay {
             cx.notify();
             self._show_task = Some(cx.spawn_in(window, async move |this, cx| {
                 cx.background_executor().timer(show_delay).await;
-                let _ = this.update_in(cx, |this, _, cx| {
+                let _ = this.update_in(cx, |this, window, cx| {
                     if this.epoch != epoch {
+                        return;
+                    }
+                    // A trigger removed while hovered (a closed row) never reports
+                    // its leave, so the pending show must check the pointer itself.
+                    if !content.trigger_bounds.contains(&window.mouse_position()) {
+                        this.clear_state();
                         return;
                     }
 
@@ -538,8 +579,14 @@ impl TooltipOverlay {
             let content = content.clone();
             self._show_task = Some(cx.spawn_in(window, async move |this, cx| {
                 cx.background_executor().timer(SHOW_DELAY).await;
-                let _ = this.update_in(cx, |this, _, cx| {
+                let _ = this.update_in(cx, |this, window, cx| {
                     if this.epoch != epoch {
+                        return;
+                    }
+                    // A trigger removed while hovered (a closed row) never reports
+                    // its leave, so the pending show must check the pointer itself.
+                    if !content.trigger_bounds.contains(&window.mouse_position()) {
+                        this.clear_state();
                         return;
                     }
 
@@ -553,6 +600,27 @@ impl TooltipOverlay {
         }
     }
 
+    /// Show a tooltip anchored to `trigger_bounds`, for an element that draws its own hoverable
+    /// regions instead of giving each one a child element that could carry `.tooltip()`.
+    pub(crate) fn show_for_bounds(
+        &mut self,
+        trigger_bounds: Bounds<Pixels>,
+        build: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.request_show(
+            TooltipContent {
+                build: Rc::new(build),
+                discrete_show_delay: None,
+                trigger_bounds,
+                placement: ManagedTooltipPlacement::Auto,
+            },
+            window,
+            cx,
+        );
+    }
+
     /// Request hiding the current tooltip. Starts a brief grace period so that
     /// moving to another tooltip-bearing element feels instant.
     pub(crate) fn request_hide(
@@ -564,7 +632,14 @@ impl TooltipOverlay {
     ) {
         // Hover transitions can deliver the previous trigger's leave after the
         // next trigger's enter. Never let that stale leave hide the new tooltip.
-        if self.active_trigger_bounds != Some(trigger_bounds) {
+        // A trigger that moved while hovered (a scroll, a list reorder) reports
+        // its leave with new bounds; it is only stale while the pointer really is
+        // over the trigger the tooltip was shown for.
+        if self.active_trigger_bounds != Some(trigger_bounds)
+            && self
+                .active_trigger_bounds
+                .is_some_and(|active| active.contains(&window.mouse_position()))
+        {
             return;
         }
 
@@ -646,7 +721,39 @@ impl Render for TooltipOverlay {
         let is_switching = self.is_switching;
         let prev_trigger_bounds = self.prev_trigger_bounds;
 
-        deferred(tooltip_overlay_positioner(trigger_bounds, placement).child(
+        // A managed tooltip otherwise only hides on its trigger's hover-leave, which
+        // never arrives when the trigger is removed or replaced while hovered (a list
+        // row closed from under the pointer). While one is showing, the overlay itself
+        // dismisses it on any press, on any scroll, and once the pointer is off the trigger.
+        let overlay = cx.entity().downgrade();
+        let dismiss_guard = canvas(
+            |_, _, _| {},
+            move |_, _, window, _| {
+                let on_press = overlay.clone();
+                window.on_mouse_event(move |_: &MouseDownEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Capture {
+                        let _ = on_press.update(cx, |overlay, cx| overlay.hide(cx));
+                    }
+                });
+                // A scroll moves the content out from under the tooltip it belongs to.
+                let on_scroll = overlay.clone();
+                window.on_mouse_event(move |_: &ScrollWheelEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Capture {
+                        let _ = on_scroll.update(cx, |overlay, cx| overlay.hide(cx));
+                    }
+                });
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Capture && !trigger_bounds.contains(&event.position)
+                    {
+                        let _ = overlay.update(cx, |overlay, cx| overlay.hide(cx));
+                    }
+                });
+            },
+        )
+        .absolute()
+        .size_0();
+
+        let tooltip = deferred(tooltip_overlay_positioner(trigger_bounds, placement).child(
             div().child(content_view).map(|el| {
                 if is_switching {
                     let Some(prev_bounds) = prev_trigger_bounds else {
@@ -686,8 +793,15 @@ impl Render for TooltipOverlay {
                 }
             }),
         ))
-        .with_priority(2)
-        .into_any_element()
+        // Above in-window pinned chrome such as the sidebar's sticky project header
+        // (priority 5), which otherwise paints over a tooltip opening below it; still
+        // under the sidebar's menus (priority 20), which hide tooltips while open.
+        .with_priority(10);
+
+        div()
+            .child(dismiss_guard)
+            .child(tooltip)
+            .into_any_element()
     }
 }
 
