@@ -13,7 +13,7 @@ use gpui::{
 };
 
 /// Host-provided presentation for an indivisible inline reference.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct InlineLink {
     pub label: SharedString,
     pub title: SharedString,

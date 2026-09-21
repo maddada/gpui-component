@@ -62,10 +62,36 @@ pub(super) struct InlineFlowPrepaintState {
     selection_states: Vec<Arc<Mutex<InlineState>>>,
 }
 
+/// Everything a flow's geometry depends on besides the wrap width.
+#[derive(PartialEq)]
+struct FlowInputs {
+    items: Arc<Vec<MeasureItem>>,
+    image_sizes: Vec<Option<Size<Pixels>>>,
+    text_style: TextStyle,
+    line_height: Pixels,
+    rem_size: Pixels,
+}
+
+/// Flows kept in the element's state between frames.
+///
+/// A transcript list lays out every visible row again on each frame it draws, and wrapping and
+/// shaping a row's prose was the largest single cost of a chat scroll frame. The flow is a pure
+/// function of `FlowInputs` and the wrap width, so an unchanged row reuses its last result. Taffy
+/// probes a node at more than one width in a pass, hence a few entries rather than one.
 #[derive(Default)]
+struct FlowCache {
+    inputs: Option<FlowInputs>,
+    layouts: Vec<InlineFlowLayout>,
+}
+
+const FLOW_CACHE_WIDTHS: usize = 3;
+
+#[derive(Default, Clone)]
 struct InlineFlowLayout {
     fragments: Vec<PositionedFragment>,
     size: Size<Pixels>,
+    /// The wrap width this flow was laid out for, the key within a [`FlowCache`].
+    wrap_width: Option<Pixels>,
 }
 
 #[derive(Clone)]
@@ -86,6 +112,7 @@ enum PositionedFragment {
     },
 }
 
+#[derive(PartialEq)]
 enum MeasureItem {
     Text {
         code: Option<InlineCodeStyle>,
@@ -240,12 +267,12 @@ impl Element for InlineFlow {
 
     fn request_layout(
         &mut self,
-        _id: Option<&GlobalElementId>,
+        id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let measure_items = self.items.iter().map(MeasureItem::from).collect::<Vec<_>>();
+        let measure_items = Arc::new(self.items.iter().map(MeasureItem::from).collect::<Vec<_>>());
         let line_height = window.line_height();
         let rem_size = window.rem_size();
         // Measurement runs after this element's inherited text-style scope has ended.
@@ -270,6 +297,24 @@ impl Element for InlineFlow {
             .collect::<Vec<_>>();
         let layout_state = InlineFlowLayoutState::default();
         let layout_ref = layout_state.layout.clone();
+        let inputs = FlowInputs {
+            items: measure_items.clone(),
+            image_sizes: image_sizes.clone(),
+            text_style: text_style.clone(),
+            line_height,
+            rem_size,
+        };
+        let cache =
+            window.with_optional_element_state::<Arc<Mutex<FlowCache>>, _>(id, |cache, _| {
+                let cache = cache.flatten().unwrap_or_default();
+                (cache.clone(), Some(cache))
+            });
+        if let Ok(mut cache) = cache.lock()
+            && cache.inputs.as_ref() != Some(&inputs)
+        {
+            cache.inputs = Some(inputs);
+            cache.layouts.clear();
+        }
 
         let layout_id = window.request_measured_layout(Default::default(), {
             move |known_dimensions, available_space, window, _cx| {
@@ -281,7 +326,21 @@ impl Element for InlineFlow {
                 } else {
                     None
                 };
-                let layout = layout_flow(
+                let cached = cache.lock().ok().and_then(|cache| {
+                    cache
+                        .layouts
+                        .iter()
+                        .find(|layout| layout.wrap_width == wrap_width)
+                        .cloned()
+                });
+                if let Some(layout) = cached {
+                    let size = layout.size;
+                    if let Ok(mut state) = layout_ref.lock() {
+                        *state = Some(layout);
+                    }
+                    return size;
+                }
+                let mut layout = layout_flow(
                     &measure_items,
                     &image_sizes,
                     &text_style,
@@ -289,6 +348,13 @@ impl Element for InlineFlow {
                     wrap_width,
                     window,
                 );
+                layout.wrap_width = wrap_width;
+                if let Ok(mut cache) = cache.lock() {
+                    if cache.layouts.len() >= FLOW_CACHE_WIDTHS {
+                        cache.layouts.remove(0);
+                    }
+                    cache.layouts.push(layout.clone());
+                }
                 let size = layout.size;
                 if let Ok(mut state) = layout_ref.lock() {
                     *state = Some(layout);
@@ -667,6 +733,7 @@ fn layout_flow(
     InlineFlowLayout {
         fragments,
         size: size(max_width, y),
+        wrap_width,
     }
 }
 
@@ -776,7 +843,15 @@ fn line_ranges(
                     window,
                 ));
             }
-            MeasureItem::Text { text, .. } => fragments.push(WrapLineFragment::text(text)),
+            MeasureItem::Text {
+                text, highlights, ..
+            } => fragments.extend(super::inline_prose::wrap_fragments(
+                text,
+                highlights,
+                text_style,
+                wrap_width.unwrap_or(px(f32::MAX)),
+                window,
+            )),
             MeasureItem::Image { .. } => fragments.push(WrapLineFragment::element(
                 image_sizes[ix]
                     .expect("image measured before wrapping")
