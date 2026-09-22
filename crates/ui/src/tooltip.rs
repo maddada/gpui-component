@@ -172,6 +172,8 @@ pub enum ManagedTooltipPlacement {
     WiderSide,
     /// Place the tooltip below the trigger, horizontally centered on it.
     Below,
+    /// Place the tooltip above the trigger with their right edges aligned.
+    AboveLeft,
     /// Place the tooltip below the trigger with their right edges aligned.
     BelowLeft,
     /// Place the tooltip below the trigger with their left edges aligned.
@@ -283,6 +285,16 @@ fn tooltip_overlay_position_with_placement(
                 tooltip_size,
             ),
             TooltipPlacement::Below,
+        ),
+        ManagedTooltipPlacement::AboveLeft => (
+            Bounds::new(
+                point(
+                    trigger_bounds.right() - tooltip_size.width,
+                    trigger_bounds.top() - tooltip_size.height,
+                ),
+                tooltip_size,
+            ),
+            TooltipPlacement::Above,
         ),
         ManagedTooltipPlacement::BelowLeft => (
             Bounds::new(
