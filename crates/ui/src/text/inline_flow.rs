@@ -667,6 +667,11 @@ fn layout_flow(
                             + reference
                                 .as_ref()
                                 .map_or(px(0.0), |reference| reference.icon_size + reference.gap);
+                        let width = if reference.is_some() {
+                            width.min(wrap_width.unwrap_or(width))
+                        } else {
+                            width
+                        };
                         line_width += width;
                         line_fragments.push(LineFragmentLayout {
                             item_ix,
@@ -825,8 +830,9 @@ fn line_ranges(
                     window,
                 )
                 .width();
+                let width = width + reference.icon_size + reference.gap;
                 fragments.push(WrapLineFragment::element(
-                    width + reference.icon_size + reference.gap,
+                    width.min(wrap_width.unwrap_or(width)),
                     text.len(),
                 ));
             }

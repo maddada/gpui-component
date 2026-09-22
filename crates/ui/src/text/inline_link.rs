@@ -124,6 +124,7 @@ pub(super) fn element(
         .aria_label(format!("Open {}", reference.label))
         .w(size.width)
         .h(size.height)
+        .overflow_hidden()
         .flex()
         .items_center()
         .gap(reference.gap)
@@ -141,6 +142,8 @@ pub(super) fn element(
         .child(
             div()
                 .w((size.width - reference.icon_size - reference.gap).max(px(0.0)))
+                .min_w_0()
+                .truncate()
                 .child(inline),
         )
         .on_click(move |event, window, cx| {
