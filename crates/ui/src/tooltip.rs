@@ -633,6 +633,33 @@ impl TooltipOverlay {
         );
     }
 
+    /// Show a tooltip at once, anchored to `trigger_bounds` in this window, for a trigger drawn in
+    /// a child window over it: that trigger's hover never reaches this window, and a small child
+    /// window cannot hold the tooltip itself. The caller owns the show delay and the hide.
+    pub(crate) fn show_now(
+        &mut self,
+        trigger_bounds: Bounds<Pixels>,
+        placement: ManagedTooltipPlacement,
+        build: Rc<dyn Fn(&mut Window, &mut App) -> AnyView>,
+        cx: &mut Context<Self>,
+    ) {
+        self.next_epoch();
+        self._show_task = None;
+        self._hide_task = None;
+        self.active_trigger_bounds = Some(trigger_bounds);
+        self.prev_trigger_bounds = None;
+        self.had_recent_tooltip = false;
+        self.is_switching = false;
+        self.content = Some(TooltipContent {
+            build,
+            discrete_show_delay: None,
+            trigger_bounds,
+            placement,
+        });
+        self.animation_epoch += 1;
+        cx.notify();
+    }
+
     /// Request hiding the current tooltip. Starts a brief grace period so that
     /// moving to another tooltip-bearing element feels instant.
     pub(crate) fn request_hide(

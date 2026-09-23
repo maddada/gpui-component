@@ -453,6 +453,23 @@ impl Root {
         Some(root.read(cx).tooltip_overlay.clone())
     }
 
+    /// Show a managed tooltip in this window at once, anchored to `trigger_bounds` (in this
+    /// window's coordinates), for a trigger that lives in a child window over it and so never
+    /// reports its hover here. The caller owns the delay; dismiss it with [`Root::hide_tooltip`].
+    pub fn show_tooltip_for_bounds(
+        window: &Window,
+        cx: &mut App,
+        trigger_bounds: gpui::Bounds<Pixels>,
+        placement: crate::tooltip::ManagedTooltipPlacement,
+        build: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
+    ) {
+        if let Some(overlay) = Self::tooltip_overlay(window, cx) {
+            overlay.update(cx, |overlay, cx| {
+                overlay.show_now(trigger_bounds, placement, Rc::new(build), cx)
+            });
+        }
+    }
+
     /// Dismiss the window's managed tooltip and cancel any pending show.
     ///
     /// A managed tooltip only hides on its trigger's hover-leave, which never
