@@ -93,6 +93,18 @@ impl InputState {
         let target_display_row = current_display_row
             .saturating_add_signed(move_lines)
             .min(max_display_row);
+        if move_lines != 0 && target_display_row == current_display_row {
+            // Up on the first row goes to the start of the text and Down on the last row to the
+            // end, as in macOS text views, VS Code and terminal line editors.
+            let (offset, direction) = if move_lines < 0 {
+                (0, MoveDirection::Up)
+            } else {
+                (self.text.len(), MoveDirection::Down)
+            };
+            self.pause_blink_cursor(cx);
+            self.move_to(offset, Some(direction), cx);
+            return;
+        }
         let target_wrap_row = self
             .display_map
             .display_row_to_wrap_row(target_display_row)
