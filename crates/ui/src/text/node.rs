@@ -896,6 +896,7 @@ impl CodeBlock {
                             ("codeblock-scroll", options.ix),
                             scroll_handle,
                             &Default::default(),
+                            None,
                             body,
                         )),
                         None => this.child(body),
@@ -1616,6 +1617,9 @@ impl BlockNode {
     /// content exactly — char-count heuristics are inaccurate on proportional
     /// fonts. A narrow table stretches to fill the frame (cells `flex_grow`
     /// proportionally); a wide table keeps its content widths and scrolls.
+    /// A column is never wider than `style.table_cell_max_width`: its cells
+    /// clip at that width on one line, or wrap inside it with
+    /// `style.table_wrap_cells`.
     fn render_scroll_table(
         table: &Table,
         col_count: usize,
@@ -1624,15 +1628,37 @@ impl BlockNode {
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
-        const CELL_PAD_PX: f32 = 16.0; // px_2 horizontal padding
         const CELL_MIN_PX: f32 = 48.0;
         const CELL_MAX_PX: f32 = 480.0;
 
+        let style = &node_cx.style;
+        let rem_size = window.rem_size();
+        let cell_max = style
+            .table_cell_max_width
+            .map_or(CELL_MAX_PX, f32::from)
+            .max(CELL_MIN_PX);
+        // The cell's own horizontal padding (px_2 unless the host restyles it),
+        // so a measured column fits its text instead of clipping its last glyphs.
+        let padding = |side: Option<DefiniteLength>| {
+            f32::from(
+                side.unwrap_or(DefiniteLength::from(px(8.0)))
+                    .to_pixels(px(0.0).into(), rem_size),
+            )
+        };
+        let cell_pad = padding(style.table_cell.padding.left)
+            + padding(style.table_cell.padding.right);
+
         // Measure the widest text per column.
         let text_style = window.text_style();
-        let font_size = text_style.font_size.to_pixels(window.rem_size());
+        let font_size = text_style.font_size.to_pixels(rem_size);
+        // A header is measured in the weight it is drawn in.
+        let mut head_style = text_style.clone();
+        if let Some(weight) = style.table_head_cell.text.font_weight {
+            head_style.font_weight = weight;
+        }
         let mut col_w = vec![CELL_MIN_PX; col_count];
-        for row in table.children.iter() {
+        for (row_ix, row) in table.children.iter().enumerate() {
+            let text_style = if row_ix == 0 { &head_style } else { &text_style };
             for (ix, cell) in row.children.iter().enumerate() {
                 let Some(slot) = col_w.get_mut(ix) else {
                     continue;
@@ -1650,12 +1676,11 @@ impl BlockNode {
                         .width;
                     w = w.max(f32::from(line_w));
                 }
-                *slot = slot.max((w + CELL_PAD_PX).min(CELL_MAX_PX));
+                *slot = slot.max((w + cell_pad).min(cell_max));
             }
         }
         let total_w: f32 = col_w.iter().sum();
 
-        let style = &node_cx.style;
         let table_scroll_key = if let Some(span) = table.span {
             SharedString::from(format!(
                 "{}-table-scroll-{}:{}",
@@ -1694,7 +1719,7 @@ impl BlockNode {
                         .flex_grow(width)
                         .flex_shrink_0()
                         .overflow_hidden()
-                        .whitespace_nowrap()
+                        .when(!style.table_wrap_cells, |this| this.whitespace_nowrap())
                         .when(align == ColumnumnAlign::Center, |this| this.text_center())
                         .when(align == ColumnumnAlign::Right, |this| this.text_right())
                         .px_2()
@@ -1727,14 +1752,15 @@ impl BlockNode {
             .when(!options.is_last, |this| this.pb(style.paragraph_gap))
             .w_full()
             .child(
-                // Scroll viewport: clips and scrolls horizontally (overflow-x
-                // is handled by `ScrollableMask`, so vertical wheel events keep
-                // bubbling to the parent TextView). No border — the frame is on
+                // Scroll viewport: clips and scrolls horizontally (the area
+                // takes sideways gestures only, so vertical wheel events keep
+                // reaching the parent TextView). No border — the frame is on
                 // the inner track so it wraps the table tightly.
                 horizontal_scroll_area(
                     ("table", options.ix),
                     &scroll_handle,
                     &style.table,
+                    style.table_scrollbar,
                     // Bordered track sized to `max(viewport, total table
                     // width)`: `min_w_full` fills the frame when the table is
                     // narrow (cells then grow to fill), the definite `w(total_w)`

@@ -1,35 +1,177 @@
+use std::cell::Cell;
+
 use gpui::{
     App, Axis, BorderStyle, Bounds, ContentMask, Edges, Element, ElementId, GlobalElementId,
-    Hitbox, Hsla, InteractiveElement as _, IntoElement, IsZero as _, LayoutId, PaintQuad,
-    ParentElement as _, Point, Position, ScrollHandle, ScrollWheelEvent,
-    StatefulInteractiveElement as _, Style, StyleRefinement, Styled as _, Window, div, px,
-    relative,
+    Hitbox, HitboxBehavior, Hsla, InteractiveElement as _, IntoElement, IsZero as _, LayoutId,
+    PaintQuad, ParentElement as _, Point, Position, ScrollHandle, ScrollWheelEvent,
+    StatefulInteractiveElement as _, Style, StyleRefinement, Styled as _, TouchPhase, Window,
+    canvas, div, point, prelude::FluentBuilder as _, px, relative,
 };
-use gpui::{Corners, Pixels};
+use gpui::{Corners, DispatchPhase, Pixels};
+use instant::{Duration, Instant};
 
-use crate::{AxisExt, StyledExt as _};
+use crate::{
+    AxisExt, StyledExt as _,
+    scroll::{Scrollbar, ScrollbarShow},
+};
 
-/// A horizontal scroll viewport that only consumes horizontal wheel deltas.
+/// A horizontal scroll viewport that only consumes horizontal wheel gestures.
 ///
 /// GPUI's native `overflow_x_scroll` maps vertical wheel input onto horizontal
-/// scrolling when there is no vertical overflow. This wrapper keeps the visual
-/// clipping and scroll offset, while delegating wheel input to [`ScrollableMask`]
-/// so vertical wheel events can continue bubbling to the parent scroller.
+/// scrolling when there is no vertical overflow, so the viewport clips with
+/// `overflow_hidden` and scrolls itself from [`horizontal_wheel`] instead.
+///
+/// With `scrollbar` set, a horizontal bar of that thickness sits in a strip of
+/// its own under the viewport and shows while the pointer is over the area; it
+/// draws nothing while the content fits.
 pub(crate) fn horizontal_scroll_area(
     id: impl Into<ElementId>,
     scroll_handle: &ScrollHandle,
     style: &StyleRefinement,
+    scrollbar: Option<Pixels>,
     child: impl IntoElement,
 ) -> impl IntoElement {
     div()
         .id(id)
-        .w_full()
+        .group(HORIZONTAL_SCROLL_GROUP)
         .relative()
-        .refine_style(style)
-        .overflow_hidden()
-        .track_scroll(scroll_handle)
-        .child(child)
-        .child(ScrollableMask::new(Axis::Horizontal, scroll_handle))
+        .w_full()
+        .child(
+            div()
+                .id("viewport")
+                .w_full()
+                .refine_style(style)
+                .overflow_hidden()
+                .track_scroll(scroll_handle)
+                .child(child),
+        )
+        // Outside the scrolled viewport: a child of it is laid out at the
+        // scroll offset, so a wheel target in there slides left with the
+        // content and stops covering the part of the viewport scrolled into.
+        .child(horizontal_wheel(scroll_handle))
+        .when_some(scrollbar, |this, thickness| {
+            this.child(
+                div()
+                    .relative()
+                    .w_full()
+                    .h(thickness + SCROLLBAR_GAP)
+                    .opacity(0.)
+                    .group_hover(HORIZONTAL_SCROLL_GROUP, |style| style.opacity(1.))
+                    .child(
+                        Scrollbar::horizontal(scroll_handle)
+                            .id("horizontal-scrollbar")
+                            .thickness(thickness)
+                            .scrollbar_show(ScrollbarShow::Always),
+                    ),
+            )
+        })
+}
+
+/// The group a horizontal scroll area's bar is revealed by.
+const HORIZONTAL_SCROLL_GROUP: &str = "gpui-horizontal-scroll-area";
+/// The air between the bottom of the content and the bar under it.
+const SCROLLBAR_GAP: Pixels = px(3.);
+
+/// How long a pause ends one wheel gesture, for wheels that report no phases.
+const GESTURE_GAP: Duration = Duration::from_millis(200);
+/// How far a gesture travels before its axis is decided.
+const GESTURE_SLOP: f32 = 3.;
+
+/// The axis the current wheel gesture was decided on, shared by every
+/// horizontal scroll area in the thread because there is one pointer.
+#[derive(Clone, Copy, Default)]
+struct WheelGesture {
+    axis: Option<Axis>,
+    travel: Point<Pixels>,
+    last_event: Option<Instant>,
+}
+
+thread_local! {
+    static WHEEL_GESTURE: Cell<WheelGesture> = Cell::new(WheelGesture::default());
+}
+
+/// The axis `event` belongs to, deciding it once per gesture.
+///
+/// A trackpad swipe is never exactly straight, so reading each event on its
+/// own lets a sideways swipe scroll the page a little on every event whose
+/// vertical part happens to win, and a vertical scroll grab a table it passes
+/// over. The gesture is decided from its first few pixels and keeps that axis
+/// through its momentum; it restarts when the fingers touch down again or the
+/// wheel pauses. Every area's handler sees every event, so this is recorded
+/// idempotently: a second read of the same event decides the same way.
+fn wheel_gesture_axis(event: &ScrollWheelEvent, line_height: Pixels) -> Option<Axis> {
+    WHEEL_GESTURE.with(|cell| {
+        let mut gesture = cell.get();
+        let now = Instant::now();
+        let paused = gesture
+            .last_event
+            .is_none_or(|last| now.duration_since(last) > GESTURE_GAP);
+        if event.touch_phase == TouchPhase::Started || paused {
+            gesture = WheelGesture::default();
+        }
+        gesture.last_event = Some(now);
+        if gesture.axis.is_none() {
+            let delta = event.delta.pixel_delta(line_height);
+            gesture.travel = gesture.travel + point(delta.x.abs(), delta.y.abs());
+            let travel = gesture.travel;
+            if f32::from(travel.x.max(travel.y)) >= GESTURE_SLOP {
+                gesture.axis = Some(if travel.x > travel.y {
+                    Axis::Horizontal
+                } else {
+                    Axis::Vertical
+                });
+            }
+        }
+        cell.set(gesture);
+        gesture.axis
+    })
+}
+
+/// The wheel target over a horizontal scroll area.
+///
+/// It scrolls on the capture pass and stops the event there. A GPUI `list`
+/// (a chat transcript) registers its own wheel handler after painting its rows,
+/// so on the bubble pass the list scrolls first and a table inside a row would
+/// only see the wheel after the page had already moved under it. A sideways
+/// gesture over an area that can scroll is consumed whole, at its edges too, so
+/// the page never drifts while the reader pans a table; a vertical gesture, or
+/// one over content that fits, passes through untouched.
+fn horizontal_wheel(scroll_handle: &ScrollHandle) -> impl IntoElement {
+    let scroll_handle = scroll_handle.clone();
+    canvas(
+        |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+        move |_, hitbox, window, _| {
+            let scroll_handle = scroll_handle.clone();
+            let view_id = window.current_view();
+            window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+                if phase != DispatchPhase::Capture {
+                    return;
+                }
+                let line_height = window.line_height();
+                let axis = wheel_gesture_axis(event, line_height);
+                if axis != Some(Axis::Horizontal) || !hitbox.should_handle_scroll(window) {
+                    return;
+                }
+                let max = scroll_handle.max_offset().x;
+                if max <= px(0.) {
+                    return;
+                }
+                let offset = scroll_handle.offset();
+                let delta = event.delta.pixel_delta(line_height).x;
+                let next = (offset.x + delta).clamp(-max, px(0.));
+                if next != offset.x {
+                    scroll_handle.set_offset(point(next, offset.y));
+                    cx.notify(view_id);
+                }
+                cx.stop_propagation();
+            });
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .w_full()
+    .h_full()
 }
 
 /// Make a scrollable mask element to cover the parent view with the mouse wheel event listening.
@@ -204,6 +346,7 @@ mod tests {
                 "horizontal-scroll-area",
                 &self.scroll_handle,
                 &Default::default(),
+                None,
                 div().w(px(300.)).h(px(40.)),
             ))
         }

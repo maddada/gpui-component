@@ -62,6 +62,15 @@ pub struct TextViewStyle {
     /// scroll the table horizontally instead of wrapping cell content, e.g.
     /// `TextViewStyle::default().table({ let mut s = StyleRefinement::default(); s.overflow.x = Some(Overflow::Scroll); s })`.
     pub table: StyleRefinement,
+    /// In scroll mode, the widest a column may grow to fit its longest cell
+    /// (480px when unset).
+    pub table_cell_max_width: Option<Pixels>,
+    /// In scroll mode, wrap a cell's text inside its column instead of keeping
+    /// it on one line and clipping it at `table_cell_max_width`.
+    pub table_wrap_cells: bool,
+    /// In scroll mode, draw a horizontal scrollbar of this thickness under a
+    /// table wider than its frame, shown while the pointer is over the table.
+    pub table_scrollbar: Option<Pixels>,
     /// Style refinement applied to each table cell.
     pub table_cell: StyleRefinement,
     /// Style refinement applied to the bordered box that holds the rows.
@@ -114,6 +123,9 @@ impl Default for TextViewStyle {
             inline_code: None,
             prose_swatch: None,
             table: StyleRefinement::default(),
+            table_cell_max_width: None,
+            table_wrap_cells: false,
+            table_scrollbar: None,
             table_cell: StyleRefinement::default(),
             table_track: StyleRefinement::default(),
             table_row: StyleRefinement::default(),
