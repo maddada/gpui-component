@@ -25,7 +25,9 @@ use gpui::{
     Window, point, size,
 };
 
-use super::{TextViewState, inline::InlineState, window_selection::SelectionScope};
+use super::{
+    TextViewState, inline::InlineState, selection::line_range_at, window_selection::SelectionScope,
+};
 
 /// Stable identity of one painted `Inline` across frames.
 ///
@@ -89,6 +91,9 @@ pub(crate) struct RegisteredInline {
     /// The part of the element left visible by its content mask.
     pub(crate) visible: Bounds<Pixels>,
     pub(crate) state: Arc<Mutex<InlineState>>,
+    /// Set on the wrapped fragments of one `InlineFlow` paragraph, which
+    /// together hold the paragraph's text in document order.
+    pub(crate) flow: Option<usize>,
 }
 
 impl RegisteredInline {
@@ -190,6 +195,55 @@ impl SelectionRegistry {
             Ok(offset) => (index, offset, true),
             Err(offset) => (index, offset, false),
         })
+    }
+
+    /// The hard line around `offset` in entry `index`, for a triple click, as
+    /// document-ordered `(entry index, byte offset)` points. A paragraph laid
+    /// out by `InlineFlow` paints one entry per wrapped fragment, so the line
+    /// continues through the neighbouring entries of the same flow until a
+    /// newline; any other run is a line on its own.
+    pub(crate) fn line_bounds(
+        &self,
+        index: usize,
+        offset: usize,
+    ) -> ((usize, usize), (usize, usize)) {
+        let entry = &self.entries[index];
+        let local = line_range_at(&entry.text, offset);
+        let same_flow = |other: &RegisteredInline| {
+            entry.flow.is_some() && other.flow == entry.flow && other.scope == entry.scope
+        };
+
+        let mut start = (index, local.start);
+        if local.start == 0 {
+            for prev in (0..index).rev() {
+                let prev_entry = &self.entries[prev];
+                if !same_flow(prev_entry) {
+                    break;
+                }
+                if let Some(newline) = prev_entry.text.rfind('\n') {
+                    start = (prev, newline + 1);
+                    break;
+                }
+                start = (prev, 0);
+            }
+        }
+
+        let mut end = (index, local.end);
+        if local.end == entry.text.len() {
+            for next in index + 1..self.entries.len() {
+                let next_entry = &self.entries[next];
+                if !same_flow(next_entry) {
+                    break;
+                }
+                if let Some(newline) = next_entry.text.find('\n') {
+                    end = (next, newline);
+                    break;
+                }
+                end = (next, next_entry.text.len());
+            }
+        }
+
+        (start, end)
     }
 
     /// Per-element ranges for the document-ordered span `start..end`, where

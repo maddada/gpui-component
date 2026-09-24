@@ -31,6 +31,8 @@ pub(super) struct Inline {
     styled_text: StyledText,
 
     state: Arc<Mutex<InlineState>>,
+    /// The paragraph this run is one wrapped fragment of, see [`Self::in_flow`].
+    flow: Option<usize>,
 }
 
 /// The inline text state, used RefCell to keep the selection state.
@@ -69,7 +71,17 @@ impl Inline {
             text: text.clone(),
             styled_text: StyledText::new(text),
             state,
+            flow: None,
         }
+    }
+
+    /// Mark this run as one fragment of the paragraph `flow` identifies.
+    /// `InlineFlow` paints a paragraph as one run per wrapped line, and a
+    /// triple click selects the whole paragraph only if it can find the
+    /// neighbouring fragments that belong to it.
+    pub(super) fn in_flow(mut self, flow: usize) -> Self {
+        self.flow = Some(flow);
+        self
     }
 
     /// Index into `links` of the link at given mouse position.
@@ -237,6 +249,7 @@ impl Element for Inline {
                     text_layout.clone(),
                     hitbox.clone(),
                     self.state.clone(),
+                    self.flow,
                     window,
                     cx,
                 );

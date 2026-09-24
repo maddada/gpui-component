@@ -389,6 +389,9 @@ impl Element for InlineFlow {
             .map(|states| states.clone())
             .unwrap_or_default();
 
+        // The paragraph's shared state is one allocation for as long as the
+        // paragraph lives, so its address tells this frame's paragraphs apart.
+        let flow = Arc::as_ptr(&self.selection_states) as usize;
         for fragment in fragments {
             match fragment {
                 PositionedFragment::Text {
@@ -432,7 +435,8 @@ impl Element for InlineFlow {
                         state,
                         if decorated { Vec::new() } else { links },
                         highlights,
-                    );
+                    )
+                    .in_flow(flow);
                     let mut element = if let (
                         InlineFlowItem::Text {
                             reference: Some(reference),

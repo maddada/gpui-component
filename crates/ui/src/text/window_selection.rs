@@ -18,7 +18,7 @@ use crate::{
     text::{
         TextViewState,
         inline::InlineState,
-        selection::{line_range_at, word_range_at},
+        selection::word_range_at,
         selection_registry::{InlineKey, RegisteredInline, SelectedSpan},
     },
 };
@@ -154,14 +154,16 @@ pub(crate) enum SelectionGranularity {
     Line,
 }
 
-/// Where the selecting press landed, content-anchored to one registered text
-/// run so the selection follows the content when an outer container scrolls.
+/// Where the selecting press landed, content-anchored to registered text runs
+/// so the selection follows the content when an outer container scrolls.
 #[derive(Clone)]
 pub(crate) struct SelectionAnchor {
-    key: InlineKey,
+    /// Start and end of the anchored unit as `(run, byte offset)`. Both are the
+    /// press point for a single press and bound the word for a double click; a
+    /// triple click's line can span the wrapped fragments of one paragraph.
+    start: (InlineKey, usize),
+    end: (InlineKey, usize),
     view: WeakEntity<TextViewState>,
-    /// Empty for a single press; the word or line for a double or triple click.
-    range: Range<usize>,
     /// True when the press hit the owning TextView, false when it landed in
     /// blank space and was proxied to the nearest run. Only a true hit focuses
     /// the view and auto-scrolls it.
@@ -263,6 +265,7 @@ impl Root {
         layout: TextLayout,
         hitbox: Hitbox,
         state: Arc<Mutex<InlineState>>,
+        flow: Option<usize>,
         window: &mut Window,
         cx: &mut App,
     ) -> Option<Range<usize>> {
@@ -282,6 +285,7 @@ impl Root {
                 hitbox,
                 visible,
                 state,
+                flow,
             });
             range
         })
@@ -415,16 +419,22 @@ impl Root {
             .get(&entry.view_id)
             .is_some_and(|(_, hitbox, _)| hitbox.is_hovered(window));
 
-        let (granularity, range) = match (hit.is_some(), click_count) {
-            (true, 2) => (
-                SelectionGranularity::Word,
-                word_range_at(&entry.text, offset).unwrap_or(offset..offset),
-            ),
+        let (granularity, (start, end)) = match (hit.is_some(), click_count) {
+            (true, 2) => {
+                let word = word_range_at(&entry.text, offset).unwrap_or(offset..offset);
+                (
+                    SelectionGranularity::Word,
+                    ((index, word.start), (index, word.end)),
+                )
+            }
             (true, count) if count >= 3 => (
                 SelectionGranularity::Line,
-                line_range_at(&entry.text, offset),
+                self.text_registry.line_bounds(index, offset),
             ),
-            _ => (SelectionGranularity::Character, offset..offset),
+            _ => (
+                SelectionGranularity::Character,
+                ((index, offset), (index, offset)),
+            ),
         };
         let multi_click = granularity != SelectionGranularity::Character;
 
@@ -439,20 +449,19 @@ impl Root {
             }
         }
 
+        let entries = self.text_registry.entries();
         self.text_selection.anchor = Some(SelectionAnchor {
-            key: entry.key.clone(),
+            start: (entries[start.0].key.clone(), start.1),
+            end: (entries[end.0].key.clone(), end.1),
             view: entry.view.clone(),
-            range: range.clone(),
             inside,
         });
         self.text_selection.granularity = granularity;
         self.text_selection.did_hit_text = on_glyph || multi_click;
         self.text_selection.is_selecting = true;
 
-        if !range.is_empty() {
-            let spans = self
-                .text_registry
-                .resolve(scope, (index, range.start), (index, range.end));
+        if start < end {
+            let spans = self.text_registry.resolve(scope, start, end);
             self.set_selection_spans(spans, cx);
         }
     }
@@ -476,7 +485,10 @@ impl Root {
         };
         // An anchor that is no longer painted (scrolled out of a virtualized
         // list) keeps the spans it already resolved instead of collapsing them.
-        let Some(anchor_index) = self.text_registry.position(&anchor.key) else {
+        let (Some(anchor_start), Some(anchor_end)) = (
+            self.text_registry.position(&anchor.start.0),
+            self.text_registry.position(&anchor.end.0),
+        ) else {
             return;
         };
         let scope = self.active_selection_scope();
@@ -496,17 +508,18 @@ impl Root {
         }
         self.text_selection.did_hit_text |= on_glyph;
 
-        let head = match self.text_selection.granularity {
-            SelectionGranularity::Character => offset..offset,
+        let (head_start, head_end) = match self.text_selection.granularity {
+            SelectionGranularity::Character => ((index, offset), (index, offset)),
             SelectionGranularity::Word => {
-                word_range_at(&entry.text, offset).unwrap_or(offset..offset)
+                let word = word_range_at(&entry.text, offset).unwrap_or(offset..offset);
+                ((index, word.start), (index, word.end))
             }
-            SelectionGranularity::Line => line_range_at(&entry.text, offset),
+            SelectionGranularity::Line => self.text_registry.line_bounds(index, offset),
         };
         // The selection is the union of the anchored unit and the unit under
         // the pointer, compared in document order.
-        let start = (anchor_index, anchor.range.start).min((index, head.start));
-        let end = (anchor_index, anchor.range.end).max((index, head.end));
+        let start = (anchor_start, anchor.start.1).min(head_start);
+        let end = (anchor_end, anchor.end.1).max(head_end);
         let spans = if self.text_selection.did_hit_text {
             self.text_registry.resolve(scope, start, end)
         } else {
