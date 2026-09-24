@@ -508,6 +508,8 @@ pub struct TooltipOverlay {
     had_recent_tooltip: bool,
     animation_epoch: usize,
     is_switching: bool,
+    /// The trigger the last press landed on, for [`TooltipOverlay::flash_pressed`].
+    pressed: Option<TooltipContent>,
 
     _show_task: Option<Task<()>>,
     _hide_task: Option<Task<()>>,
@@ -523,6 +525,7 @@ impl TooltipOverlay {
             had_recent_tooltip: false,
             animation_epoch: 0,
             is_switching: false,
+            pressed: None,
             _show_task: None,
             _hide_task: None,
         }
@@ -718,6 +721,42 @@ impl TooltipOverlay {
                 cx.notify();
             });
         }));
+    }
+
+    /// Shows `build`'s view for `duration` in place of the tooltip of the trigger just pressed,
+    /// while the pointer is still on it, then shows that trigger's own tooltip again or hides.
+    /// Returns false when the pointer is not on the last pressed trigger.
+    pub(crate) fn flash_pressed(
+        &mut self,
+        duration: Duration,
+        build: Rc<dyn Fn(&mut Window, &mut App) -> AnyView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(pressed) = self.pressed.take() else {
+            return false;
+        };
+        if window.last_input_was_keyboard()
+            || !pressed.trigger_bounds.contains(&window.mouse_position())
+        {
+            return false;
+        }
+        self.show_now(pressed.trigger_bounds, pressed.placement, build, cx);
+        let epoch = self.epoch;
+        self._hide_task = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(duration).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.epoch != epoch {
+                    return;
+                }
+                if pressed.trigger_bounds.contains(&window.mouse_position()) {
+                    this.show_now(pressed.trigger_bounds, pressed.placement, pressed.build, cx);
+                } else {
+                    this.hide(cx);
+                }
+            });
+        }));
+        true
     }
 
     pub(crate) fn hide(&mut self, cx: &mut Context<Self>) {
@@ -954,8 +993,15 @@ pub trait ManagedTooltipExt: StatefulInteractiveElement + crate::ElementExt + Si
         })
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
             if let Some(overlay) = Root::tooltip_overlay(window, cx) {
+                let trigger_bounds = trigger_bounds_cell.get();
                 overlay.update(cx, |overlay, cx| {
                     overlay.hide(cx);
+                    overlay.pressed = Some(TooltipContent {
+                        build: build_tooltip.clone(),
+                        discrete_show_delay,
+                        trigger_bounds,
+                        placement,
+                    });
                 });
             }
         })

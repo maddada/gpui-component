@@ -453,6 +453,23 @@ impl Root {
         Some(root.read(cx).tooltip_overlay.clone())
     }
 
+    /// Shows `build`'s view for `duration` as the tooltip of the managed-tooltip trigger the last
+    /// press in this window landed on, when the pointer is still on it, then gives the trigger its
+    /// own tooltip back. Returns false, showing nothing, otherwise.
+    pub fn flash_pressed_tooltip(
+        window: &mut Window,
+        cx: &mut App,
+        duration: std::time::Duration,
+        build: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
+    ) -> bool {
+        let Some(overlay) = Self::tooltip_overlay(window, cx) else {
+            return false;
+        };
+        overlay.update(cx, |overlay, cx| {
+            overlay.flash_pressed(duration, Rc::new(build), window, cx)
+        })
+    }
+
     /// Show a managed tooltip in this window at once, anchored to `trigger_bounds` (in this
     /// window's coordinates), for a trigger that lives in a child window over it and so never
     /// reports its hover here. The caller owns the delay; dismiss it with [`Root::hide_tooltip`].
