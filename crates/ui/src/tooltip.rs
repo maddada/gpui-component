@@ -2,10 +2,11 @@ use std::{cell::Cell, rc::Rc, time::Duration};
 
 use gpui::{
     Action, AnyElement, AnyView, App, AppContext, Bounds, Context, DispatchPhase, Display, Element,
-    ElementId, MouseDownEvent, MouseMoveEvent, ScrollWheelEvent,
-    GlobalElementId, Half, InspectorElementId, IntoElement, LayoutId, MouseButton, ParentElement,
-    Pixels, Point, Position, Render, SharedString, Size, StatefulInteractiveElement, Style,
-    StyleRefinement, Styled, Task, Window, canvas, deferred, div, point, prelude::FluentBuilder, px,
+    ElementId, GlobalElementId, Half, InspectorElementId, IntoElement, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Position, Render,
+    ScrollWheelEvent, SharedString, Size, StatefulInteractiveElement, Style, StyleRefinement,
+    Styled, Task, Window, canvas, deferred, div, native_occlusion_row_gap,
+    nudge_out_of_native_occlusions, point, prelude::FluentBuilder, px,
 };
 
 use crate::{
@@ -16,6 +17,21 @@ use crate::{
     root::Root,
     text::Text,
 };
+
+/// Ghostex: the corner radius of a tooltip bubble drawn in a frosted window.
+pub const FROSTED_TOOLTIP_RADIUS: f32 = 7.;
+
+static FROSTED_TOOLTIP_ALPHA: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0x3f1e_b852); // 0.62
+
+/// Ghostex: how much of the popover colour a bubble in a frosted window paints over its blur.
+pub fn set_frosted_tooltip_alpha(alpha: f32) {
+    FROSTED_TOOLTIP_ALPHA.store(alpha.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+fn frosted_tooltip_alpha() -> f32 {
+    f32::from_bits(FROSTED_TOOLTIP_ALPHA.load(std::sync::atomic::Ordering::Relaxed))
+}
 
 pub(crate) fn init(_cx: &mut App) {
     // No app-level init needed — TooltipOverlay is per-window via Root.
@@ -107,18 +123,43 @@ impl Render for Tooltip {
         // The wrapper must be a flex container: block layout collapses the
         // bubble's vertical margins, so the overlay positioner would measure a
         // box without them and place the bubble flush against its trigger.
-        div().flex().child(
+        //
+        // CDXC:Tooltips 2026-09-24 WHY:
+        // Taffy measures a flex item's base and automatic minimum size with its text unwrapped, so a bubble can only shrink to a narrower box (the room next to a native view, see `TooltipOverlayPositioner`) when every flex item down to the text's container has min-width 0. A bubble that fits keeps its one-line width.
+        // Ghostex: in a frosted window (the desktop's tooltip host under window glass) the bubble
+        // is a thinned fill over the window's blur, which is limited to the bubble's own frame.
+        let frosted = window.frosted_surface();
+        div().flex().min_w_0().child(
             h_flex()
+                .min_w_0()
                 .font_family(cx.theme().font_family.clone())
                 .mx_3()
                 .my_2()
-                .bg(cx.theme().tokens.popover)
                 .text_color(cx.theme().popover_foreground)
-                .bg(cx.theme().tokens.popover)
+                .map(|this| {
+                    if frosted {
+                        this.relative()
+                            .bg(cx.theme().tokens.popover.opacity(frosted_tooltip_alpha()))
+                            .child(
+                                canvas(
+                                    |_, _, _| {},
+                                    |bounds, _, window, _| {
+                                        window.report_frosted_region(
+                                            bounds,
+                                            px(FROSTED_TOOLTIP_RADIUS),
+                                        );
+                                    },
+                                )
+                                .absolute()
+                                .size_full(),
+                            )
+                    } else {
+                        this.bg(cx.theme().tokens.popover).shadow_md()
+                    }
+                })
                 .border_1()
                 .border_color(cx.theme().border)
-                .shadow_md()
-                .rounded(px(6.))
+                .rounded(px(if frosted { FROSTED_TOOLTIP_RADIUS } else { 6. }))
                 .justify_between()
                 .py_0p5()
                 .px_2()
@@ -126,7 +167,7 @@ impl Render for Tooltip {
                 .gap_3()
                 .refine_style(&self.style)
                 .map(|this| {
-                    this.child(div().map(|this| match self.content {
+                    this.child(div().min_w_0().map(|this| match self.content {
                         TooltipContext::Text(ref text) => this.child(text.clone()),
                         TooltipContext::Element(ref builder) => this.child(builder(window, cx)),
                     }))
@@ -358,6 +399,8 @@ struct TooltipOverlayPositioner {
     trigger_bounds: Bounds<Pixels>,
     placement: ManagedTooltipPlacement,
     children: Vec<AnyElement>,
+    /// The tooltip's view, handed to the window's tooltip presenter when one is set.
+    view: Option<AnyView>,
 }
 
 struct TooltipOverlayPositionerState {
@@ -372,6 +415,14 @@ fn tooltip_overlay_positioner(
         trigger_bounds,
         placement,
         children: Vec::new(),
+        view: None,
+    }
+}
+
+impl TooltipOverlayPositioner {
+    fn presenting(mut self, view: AnyView) -> Self {
+        self.view = Some(view);
+        self
     }
 }
 
@@ -383,7 +434,8 @@ impl ParentElement for TooltipOverlayPositioner {
 
 impl Element for TooltipOverlayPositioner {
     type RequestLayoutState = TooltipOverlayPositionerState;
-    type PrepaintState = ();
+    /// Whether the tooltip went to the window's presenter instead of being painted here.
+    type PrepaintState = bool;
 
     fn id(&self) -> Option<ElementId> {
         None
@@ -430,9 +482,9 @@ impl Element for TooltipOverlayPositioner {
         request_layout: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
-    ) {
+    ) -> bool {
         if request_layout.child_layout_ids.is_empty() {
-            return;
+            return false;
         }
 
         let mut child_min: Point<Pixels> = point(Pixels::MAX, Pixels::MAX);
@@ -452,8 +504,23 @@ impl Element for TooltipOverlayPositioner {
             TOOLTIP_WINDOW_MARGIN + client_inset,
             self.placement,
         );
+        // CDXC:Tooltips 2026-09-24 SEE-ALSO: gpui's `Window::occlude_native_region` and its stock tooltip prepaint (`window.rs`), which dodge the same regions the same way; the desktop's CEF element records them.
+        let tooltip_bounds = nudge_out_of_native_occlusions(
+            tooltip_position.bounds,
+            window.native_occlusions(),
+            Bounds::new(Point::default(), window.viewport_size()),
+        );
 
-        let offset = tooltip_position.bounds.origin - bounds.origin;
+        // Ghostex: a window with a tooltip presenter draws its tooltips in a window of their own
+        // (the desktop's frosted tooltip host), so this one only reports where it would go.
+        if window.tooltip_presenter_active()
+            && let Some(view) = self.view.clone()
+        {
+            window.present_tooltip(view, tooltip_bounds);
+            return true;
+        }
+
+        let offset = tooltip_bounds.origin - bounds.origin;
         let offset = point(offset.x.round(), offset.y.round());
 
         window.with_element_offset(offset, |window| {
@@ -461,6 +528,7 @@ impl Element for TooltipOverlayPositioner {
                 child.prepaint(window, cx);
             }
         });
+        false
     }
 
     fn paint(
@@ -469,10 +537,13 @@ impl Element for TooltipOverlayPositioner {
         _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
-        _prepaint: &mut Self::PrepaintState,
+        presented: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
+        if *presented {
+            return;
+        }
         for child in &mut self.children {
             child.paint(window, cx);
         }
@@ -793,6 +864,7 @@ impl Render for TooltipOverlay {
         };
 
         let content_view = (content.build)(window, cx);
+        let presented_view = content_view.clone();
         let trigger_bounds = content.trigger_bounds;
         let placement = content.placement;
         let animation_epoch = self.animation_epoch;
@@ -831,55 +903,73 @@ impl Render for TooltipOverlay {
         .absolute()
         .size_0();
 
-        let tooltip = deferred(tooltip_overlay_positioner(trigger_bounds, placement).child(
-            div().child(content_view).map(|el| {
-                if is_switching {
-                    let Some(prev_bounds) = prev_trigger_bounds else {
-                        return el.into_any_element();
-                    };
+        // The room between the native views on the trigger's row; a bubble wider than it wraps
+        // (`Tooltip::render` explains the min-width chain that lets it).
+        let gap = native_occlusion_row_gap(
+            trigger_bounds,
+            window.native_occlusions(),
+            window.viewport_size(),
+        );
+        let room = gap.end - gap.start - TOOLTIP_WINDOW_MARGIN * 2.;
+        let content = div()
+            .flex()
+            .min_w_0()
+            .when(room > px(0.), |el| el.max_w(room))
+            .child(content_view);
+        let tooltip = deferred(
+            tooltip_overlay_positioner(trigger_bounds, placement)
+                .presenting(presented_view)
+                .child(content.map(|el| {
+                    if is_switching {
+                        let Some(prev_bounds) = prev_trigger_bounds else {
+                            return el.into_any_element();
+                        };
 
-                    let is_same_y =
-                        (trigger_bounds.origin.y - prev_bounds.origin.y).abs() < px(10.);
-                    if !is_same_y {
-                        // If the new trigger is at a different Y level, don't slide horizontally
-                        // to avoid weird diagonal movement. (We could consider sliding vertically
-                        // in this case, but it might be less visually clear.)
-                        return el.into_any_element();
+                        let is_same_y =
+                            (trigger_bounds.origin.y - prev_bounds.origin.y).abs() < px(10.);
+                        if !is_same_y {
+                            // If the new trigger is at a different Y level, don't slide horizontally
+                            // to avoid weird diagonal movement. (We could consider sliding vertically
+                            // in this case, but it might be less visually clear.)
+                            return el.into_any_element();
+                        }
+
+                        let dx = trigger_bounds.center().x - prev_bounds.center().x;
+
+                        Transition::new(SLIDE_DURATION)
+                            .ease(ease_in_out_cubic)
+                            .slide_x(-dx, px(0.))
+                            .apply(
+                                el,
+                                ElementId::NamedInteger(
+                                    "tooltip-slide".into(),
+                                    animation_epoch as u64,
+                                ),
+                            )
+                            .into_any_element()
+                    } else {
+                        // New tooltip: slideDown + fadeIn
+                        Transition::new(ENTER_DURATION)
+                            .ease(ease_out_cubic)
+                            .slide_y(px(4.), px(0.))
+                            .fade(0.0, 1.0)
+                            .apply(
+                                el,
+                                ElementId::NamedInteger(
+                                    "tooltip-enter".into(),
+                                    animation_epoch as u64,
+                                ),
+                            )
+                            .into_any_element()
                     }
-
-                    let dx = trigger_bounds.center().x - prev_bounds.center().x;
-
-                    Transition::new(SLIDE_DURATION)
-                        .ease(ease_in_out_cubic)
-                        .slide_x(-dx, px(0.))
-                        .apply(
-                            el,
-                            ElementId::NamedInteger("tooltip-slide".into(), animation_epoch as u64),
-                        )
-                        .into_any_element()
-                } else {
-                    // New tooltip: slideDown + fadeIn
-                    Transition::new(ENTER_DURATION)
-                        .ease(ease_out_cubic)
-                        .slide_y(px(4.), px(0.))
-                        .fade(0.0, 1.0)
-                        .apply(
-                            el,
-                            ElementId::NamedInteger("tooltip-enter".into(), animation_epoch as u64),
-                        )
-                        .into_any_element()
-                }
-            }),
-        ))
+                })),
+        )
         // Above in-window pinned chrome such as the sidebar's sticky project header
         // (priority 5), which otherwise paints over a tooltip opening below it; still
         // under the sidebar's menus (priority 20), which hide tooltips while open.
         .with_priority(10);
 
-        div()
-            .child(dismiss_guard)
-            .child(tooltip)
-            .into_any_element()
+        div().child(dismiss_guard).child(tooltip).into_any_element()
     }
 }
 

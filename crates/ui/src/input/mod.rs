@@ -24,6 +24,7 @@ mod rope_ext;
 mod search;
 mod selection;
 mod state;
+mod undo;
 
 pub(crate) use clear_button::*;
 pub use content_type::*;

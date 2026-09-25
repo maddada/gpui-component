@@ -1562,7 +1562,48 @@ impl BlockNode {
                                         )),
                                 );
                             }
-                            _ => {}
+                            // Any other block an item holds (a fenced code
+                            // block, a quote, a table) belongs to the item, so
+                            // it sits under the item's text on the same column
+                            // rather than disappearing. An invisible copy of
+                            // the marker holds that column, whatever gutter
+                            // the host gave the marker.
+                            _ => {
+                                items.push(
+                                    h_flex()
+                                        .w_full()
+                                        .min_w_0()
+                                        .items_start()
+                                        .pt(node_cx.style.paragraph_gap)
+                                        .when(!options.todo && checked.is_none(), |this| {
+                                            this.child(
+                                                div()
+                                                    .flex()
+                                                    .flex_shrink_0()
+                                                    .invisible()
+                                                    .refine_style(&node_cx.style.list_marker)
+                                                    .child(list_item_prefix(
+                                                        ix,
+                                                        options.ordered,
+                                                        options.list_depth(),
+                                                    )),
+                                            )
+                                        })
+                                        .child(div().flex_1().min_w_0().child(
+                                            child.render_block(
+                                                NodeRenderOptions {
+                                                    depth: options.depth + 1,
+                                                    todo: checked.is_some(),
+                                                    is_last: true,
+                                                    ..options
+                                                },
+                                                node_cx,
+                                                window,
+                                                cx,
+                                            ),
+                                        )),
+                                );
+                            }
                         }
                     }
                     items

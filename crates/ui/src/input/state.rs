@@ -25,6 +25,7 @@ use super::{
     DisplayMap, MASK_CHAR,
     blink_cursor::BlinkCursor,
     change::Change,
+    undo::{EditHistory, EditKind, StepPolicy},
     element::{EditorScrollbarSnapshot, TextElement},
     inline_replacement::{InlineProjection, InlineReplacement},
     mask_pattern::{MaskPattern, normalize_number_input},
@@ -48,7 +49,7 @@ use crate::input::{
 };
 use crate::native_menu::NativeMenu;
 use crate::scroll::AutoScroll;
-use crate::{Root, history::History};
+use crate::Root;
 
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
 #[action(namespace = input, no_json)]
@@ -265,6 +266,8 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("ctrl-z", Undo, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-y", Redo, Some(CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-shift-z", Redo, Some(CONTEXT)),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-.", ToggleCodeActions, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
@@ -343,7 +346,11 @@ pub struct InputState {
     pub(super) mode: InputMode,
     pub(super) text: Rope,
     pub(super) display_map: DisplayMap,
-    pub(super) history: History<Change>,
+    pub(super) history: EditHistory,
+    /// How the next `replace_text_in_range` joins the undo stack; derived from the edit when unset.
+    pub(super) next_step_policy: Option<StepPolicy>,
+    /// The selection to restore when the next edit is undone, for actions that select the text they delete first.
+    pub(super) pending_selection_before: Option<Selection>,
     pub(super) blink_cursor: Entity<BlinkCursor>,
     pub(super) loading: bool,
     /// Range in UTF-8 length for the selected text.
@@ -471,7 +478,7 @@ impl InputState {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle().tab_stop(true);
         let blink_cursor = cx.new(|_| BlinkCursor::new());
-        let history = History::new().group_interval(std::time::Duration::from_secs(1));
+        let history = EditHistory::new();
 
         let _subscriptions = vec![
             // Observe the blink cursor to repaint the view when it changes.
@@ -499,6 +506,8 @@ impl InputState {
             display_map: DisplayMap::new(text_style.font(), window.rem_size(), None),
             blink_cursor,
             history,
+            next_step_policy: None,
+            pending_selection_before: None,
             selected_range: Selection::default(),
             search_panel: None,
             searchable: false,
@@ -920,6 +929,7 @@ impl InputState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.next_step_policy = Some(StepPolicy::Separate);
         self.replace_text(text, window, cx);
         self.reset_selection();
         self.reset_lsp_state();
@@ -1618,6 +1628,8 @@ impl InputState {
 
     pub(super) fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected_range.is_empty() {
+            self.pending_selection_before = Some(self.selected_range);
+            self.next_step_policy = Some(StepPolicy::Coalesce(EditKind::Deleting));
             self.select_to(self.previous_boundary(self.cursor()), cx)
         }
         self.replace_text_in_range(None, "", window, cx);
@@ -1626,6 +1638,8 @@ impl InputState {
 
     pub(super) fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected_range.is_empty() {
+            self.pending_selection_before = Some(self.selected_range);
+            self.next_step_policy = Some(StepPolicy::Coalesce(EditKind::Deleting));
             self.select_to(self.next_boundary(self.cursor()), cx)
         }
         self.replace_text_in_range(None, "", window, cx);
@@ -1752,6 +1766,9 @@ impl InputState {
 
             // Add newline and indent
             let new_line_text = format!("\n{}", indent);
+            if self.selected_range.is_empty() {
+                self.next_step_policy = Some(StepPolicy::Coalesce(EditKind::Typing));
+            }
             self.replace_text_in_range_silent(None, &new_line_text, window, cx);
             self.pause_blink_cursor(cx);
         } else {
@@ -2195,40 +2212,59 @@ impl InputState {
         }
     }
 
-    fn push_history(&mut self, text: &Rope, range: &Range<usize>, new_text: &str) {
-        if self.history.ignore {
-            return;
-        }
-
+    fn history_change(text: &Rope, range: &Range<usize>, new_text: &str) -> Change {
         let range =
             text.clip_offset(range.start, Bias::Left)..text.clip_offset(range.end, Bias::Right);
         let old_text = text.slice(range.clone()).to_string();
         let new_range = range.start..range.start + new_text.len();
+        Change::new(range, &old_text, new_range, new_text)
+    }
 
-        self.history
-            .push(Change::new(range, &old_text, new_range, new_text));
+    /// A single typed character joins the typing step around it; any other edit without an
+    /// explicit policy (multi-character input, replacing a selection, programmatic edits) is its
+    /// own step.
+    fn derived_step_policy(&self, range: &Range<usize>, new_text: &str) -> StepPolicy {
+        if !self.silent_replace_text && range.is_empty() && new_text.graphemes(true).count() == 1 {
+            StepPolicy::Coalesce(EditKind::Typing)
+        } else {
+            StepPolicy::Separate
+        }
     }
 
     pub(super) fn undo(&mut self, _: &Undo, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(step) = self.history.undo() else {
+            return;
+        };
         self.history.ignore = true;
-        if let Some(changes) = self.history.undo() {
-            for change in changes {
-                let range_utf16 = self.range_to_utf16(&change.new_range.into());
-                self.replace_text_in_range_silent(Some(range_utf16), &change.old_text, window, cx);
-            }
+        for change in step.changes.iter().rev() {
+            let range_utf16 = self.range_to_utf16(&change.new_range.into());
+            self.replace_text_in_range_silent(Some(range_utf16), &change.old_text, window, cx);
         }
         self.history.ignore = false;
+        self.restore_history_selection(step.selection_before, cx);
     }
 
     pub(super) fn redo(&mut self, _: &Redo, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(step) = self.history.redo() else {
+            return;
+        };
         self.history.ignore = true;
-        if let Some(changes) = self.history.redo() {
-            for change in changes {
-                let range_utf16 = self.range_to_utf16(&change.old_range.into());
-                self.replace_text_in_range_silent(Some(range_utf16), &change.new_text, window, cx);
-            }
+        for change in &step.changes {
+            let range_utf16 = self.range_to_utf16(&change.old_range.into());
+            self.replace_text_in_range_silent(Some(range_utf16), &change.new_text, window, cx);
         }
         self.history.ignore = false;
+        self.restore_history_selection(step.selection_after, cx);
+    }
+
+    fn restore_history_selection(&mut self, selection: Selection, cx: &mut Context<Self>) {
+        let len = self.text.len();
+        self.selected_range = (selection.start.min(len)..selection.end.min(len)).into();
+        self.selection_reversed = false;
+        self.selected_word_range = None;
+        self.update_preferred_column();
+        self.scroll_to(self.cursor(), None, cx);
+        cx.notify();
     }
 
     /// Get byte offset of the cursor.
@@ -3011,6 +3047,13 @@ impl EntityInputHandler for InputState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let selection_before = self
+            .pending_selection_before
+            .take()
+            .unwrap_or(self.selected_range);
+        let explicit_step_policy = self.next_step_policy.take();
+        let committing_composition = self.ime_marked_range.is_some();
+
         if self.disabled {
             return;
         }
@@ -3067,15 +3110,14 @@ impl EntityInputHandler for InputState {
             }
         }
 
-        if mask_changed {
+        let change = if mask_changed {
             // A segment-based history entry no longer matches the masked
             // document, record a whole-document change instead, so that
             // undo/redo can restore the text exactly.
-            self.push_history(&old_text, &(0..old_text.len()), &self.text.to_string());
+            Self::history_change(&old_text, &(0..old_text.len()), &self.text.to_string())
         } else {
-            self.push_history(&old_text, &range, &new_text);
-        }
-        self.history.end_grouping();
+            Self::history_change(&old_text, &range, new_text)
+        };
         if let Some(diagnostics) = self.mode.diagnostics_mut() {
             diagnostics.reset(&self.text)
         }
@@ -3098,6 +3140,16 @@ impl EntityInputHandler for InputState {
         self.lsp.update(&self.text, window, cx);
         self.selected_range = (new_offset..new_offset).into();
         self.ime_marked_range.take();
+        let step_policy = if committing_composition {
+            StepPolicy::Continue
+        } else {
+            explicit_step_policy.unwrap_or_else(|| self.derived_step_policy(&range, new_text))
+        };
+        self.history
+            .record(change, selection_before, self.selected_range, step_policy);
+        if committing_composition {
+            self.history.close_step();
+        }
         self.update_preferred_column();
         self.update_search(cx);
         self.mode.update_auto_grow(&self.display_map);
@@ -3122,6 +3174,8 @@ impl EntityInputHandler for InputState {
         if self.disabled {
             return;
         }
+        let selection_before = self.selected_range;
+        let starting_composition = self.ime_marked_range.is_none();
 
         self.lsp.reset();
 
@@ -3186,8 +3240,15 @@ impl EntityInputHandler for InputState {
                 .into();
         }
         self.mode.update_auto_grow(&self.display_map);
-        self.history.start_grouping();
-        self.push_history(&old_text, &range, new_text);
+        if starting_composition {
+            self.history.close_step();
+        }
+        let change = Self::history_change(&old_text, &range, new_text);
+        self.history
+            .record(change, selection_before, self.selected_range, StepPolicy::Continue);
+        if new_text.is_empty() {
+            self.history.close_step();
+        }
         cx.notify();
     }
 
@@ -3697,11 +3758,15 @@ ORDER BY id
                 state.replace_text_in_range(None, "5", window, cx);
                 assert_eq!(state.value(), "12,345");
 
-                // The two edits are grouped into one undo step (by the
-                // history group interval). Before the whole-document history
-                // fix, this undo produced a corrupted value like "1,2344".
+                // A multi-character insert is its own undo step, so each
+                // edit undoes separately. Before the whole-document history
+                // fix, undo produced a corrupted value like "1,2344".
+                state.undo(&Undo, window, cx);
+                assert_eq!(state.value(), "1,234");
                 state.undo(&Undo, window, cx);
                 assert_eq!(state.value(), "");
+                state.redo(&Redo, window, cx);
+                assert_eq!(state.value(), "1,234");
                 state.redo(&Redo, window, cx);
                 assert_eq!(state.value(), "12,345");
             });
@@ -3925,7 +3990,7 @@ ORDER BY id
                 // Seed with a value and clear history so the baseline is clean.
                 state.set_value("first", window, cx);
                 assert!(
-                    state.history.undos().is_empty(),
+                    !state.history.can_undo(),
                     "history should be empty after set_value"
                 );
 
@@ -3933,7 +3998,7 @@ ORDER BY id
                 state.replace_all("second", window, cx);
                 assert_eq!(state.value(), "second");
                 assert!(
-                    !state.history.undos().is_empty(),
+                    state.history.can_undo(),
                     "replace_all should record an undo step"
                 );
 
