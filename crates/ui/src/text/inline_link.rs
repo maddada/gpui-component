@@ -21,6 +21,9 @@ pub struct InlineLink {
     pub icon_size: Pixels,
     pub gap: Pixels,
     pub color: Hsla,
+    /// Ellipsize from the start when the chip is wider than the line, so a path keeps its file
+    /// name visible.
+    pub truncate_start: bool,
 }
 
 pub(super) type LinkPresentationFn = dyn Fn(&str, &str) -> Option<InlineLink> + Send + Sync;
@@ -109,6 +112,7 @@ pub(super) fn element(
     reference: &InlineLink,
     link: &LinkMark,
     size: Size<Pixels>,
+    clamped: bool,
     id: usize,
     handler: Option<Arc<super::LinkClickFn>>,
     secondary: Option<Arc<super::LinkClickFn>>,
@@ -139,11 +143,21 @@ pub(super) fn element(
                 .text_color(reference.color)
                 .flex_shrink_0(),
         )
+        // Only a chip narrowed to the line may ellipsize. Every other chip is exactly as wide as
+        // its shaped label, and GPUI's truncation sums per-character advances without kerning,
+        // which comes out a pixel or two wider than the shaped line and cut labels that fit.
         .child(
             div()
                 .w((size.width - reference.icon_size - reference.gap).max(px(0.0)))
                 .min_w_0()
-                .truncate()
+                .when(clamped, |this| {
+                    let this = this.overflow_hidden();
+                    if reference.truncate_start {
+                        this.text_ellipsis_start()
+                    } else {
+                        this.text_ellipsis()
+                    }
+                })
                 .child(inline),
         )
         .on_click(move |event, window, cx| {

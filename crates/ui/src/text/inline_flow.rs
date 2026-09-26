@@ -104,6 +104,8 @@ enum PositionedFragment {
         text: SharedString,
         links: Vec<(Range<usize>, LinkMark)>,
         highlights: Vec<(Range<usize>, HighlightStyle)>,
+        /// A reference chip narrowed to the wrap width, see [`LineFragmentKind::Text`].
+        clamped: bool,
     },
     Image {
         item_ix: usize,
@@ -140,6 +142,9 @@ enum LineFragmentKind {
         text: SharedString,
         links: Vec<(Range<usize>, LinkMark)>,
         highlights: Vec<(Range<usize>, HighlightStyle)>,
+        /// A reference chip wider than the line, laid out at the wrap width. Only such a chip
+        /// may ellipsize its label; see `inline_link::element`.
+        clamped: bool,
     },
     Image,
 }
@@ -402,6 +407,7 @@ impl Element for InlineFlow {
                     text,
                     links,
                     highlights,
+                    clamped,
                     ..
                 } => {
                     let previous = previous_states
@@ -450,6 +456,7 @@ impl Element for InlineFlow {
                             reference,
                             &link,
                             fragment_size,
+                            clamped,
                             elements.len(),
                             self.link_click.clone(),
                             self.link_secondary_click.clone(),
@@ -671,8 +678,10 @@ fn layout_flow(
                             + reference
                                 .as_ref()
                                 .map_or(px(0.0), |reference| reference.icon_size + reference.gap);
-                        let width = if reference.is_some() {
-                            width.min(wrap_width.unwrap_or(width))
+                        let clamped = reference.is_some()
+                            && wrap_width.is_some_and(|wrap_width| width > wrap_width);
+                        let width = if clamped {
+                            wrap_width.unwrap_or(width)
                         } else {
                             width
                         };
@@ -683,6 +692,7 @@ fn layout_flow(
                                 text: subtext,
                                 links,
                                 highlights,
+                                clamped,
                             },
                             size: size(width, line_height),
                             source_range: local_start..local_end,
@@ -716,6 +726,7 @@ fn layout_flow(
                     text,
                     links,
                     highlights,
+                    clamped,
                 } => PositionedFragment::Text {
                     item_ix: fragment.item_ix,
                     origin,
@@ -724,6 +735,7 @@ fn layout_flow(
                     text,
                     links,
                     highlights,
+                    clamped,
                 },
                 LineFragmentKind::Image => PositionedFragment::Image {
                     item_ix: fragment.item_ix,
