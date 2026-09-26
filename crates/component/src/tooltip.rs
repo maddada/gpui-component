@@ -11,6 +11,8 @@ use gpui_base::{
     TooltipRequest as BaseTooltipRequest, TooltipTransition as BaseTooltipTransition,
 };
 
+pub use gpui_base::ManagedTooltipPlacement;
+
 use crate::{
     ActiveTheme, Placement, StyledExt,
     animation::{EffectTransition, ease_in_out_cubic, ease_out_cubic},
@@ -224,16 +226,17 @@ impl ComponentTooltip {
     }
 }
 
-// ── Internal managed tooltip trait ──────────────────────────────────────────
+// ── Managed tooltip trait ───────────────────────────────────────────────────
 
-pub(crate) trait ManagedTooltipExt:
-    StatefulInteractiveElement + crate::ElementExt + Sized
-{
+/// Tooltips drawn by the window's managed overlay: a shared show delay,
+/// placements relative to the trigger, discrete tooltips, and dismissal when
+/// the trigger is pressed, scrolled or left.
+pub trait ManagedTooltipExt: StatefulInteractiveElement + crate::ElementExt + Sized {
     fn managed_tooltip(
         self,
         build_tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
     ) -> Self {
-        self.managed_tooltip_with_placement(None, build_tooltip)
+        self.managed_tooltip_with_placement(ManagedTooltipPlacement::Auto, build_tooltip)
     }
 
     fn managed_tooltip_at(
@@ -241,42 +244,65 @@ pub(crate) trait ManagedTooltipExt:
         placement: Placement,
         build_tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
     ) -> Self {
-        self.managed_tooltip_with_placement(Some(placement), build_tooltip)
+        self.managed_tooltip_with_placement(placement, build_tooltip)
     }
 
+    /// Attach a managed tooltip at an explicit position relative to this element.
+    ///
+    /// Takes a [`ManagedTooltipPlacement`], or a preferred [`Placement`] (also as an
+    /// `Option`, `None` being [`ManagedTooltipPlacement::Auto`]).
     fn managed_tooltip_with_placement(
         self,
-        preferred_placement: Option<Placement>,
+        placement: impl Into<ManagedTooltipPlacement>,
+        build_tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
+    ) -> Self {
+        self.managed_tooltip_with_configuration(placement.into(), None, build_tooltip)
+    }
+
+    /// Attach a managed tooltip that hides immediately when its trigger is
+    /// left and waits for `show_delay` again when switching between triggers.
+    fn managed_discrete_tooltip_with_placement(
+        self,
+        placement: ManagedTooltipPlacement,
+        show_delay: Duration,
+        build_tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
+    ) -> Self {
+        self.managed_tooltip_with_configuration(placement, Some(show_delay), build_tooltip)
+    }
+
+    fn managed_tooltip_with_configuration(
+        self,
+        placement: ManagedTooltipPlacement,
+        discrete_show_delay: Option<Duration>,
         build_tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
     ) -> Self {
         let build_tooltip = Rc::new(build_tooltip);
         let trigger_bounds_cell: Rc<Cell<Bounds<Pixels>>> = Rc::new(Cell::new(Bounds::default()));
         let bounds_writer = trigger_bounds_cell.clone();
+        let request = move |bounds: Bounds<Pixels>| {
+            let build = build_tooltip.clone();
+            let request = BaseTooltipRequest::new(bounds, move |window, cx| build(window, cx))
+                .managed_placement(placement);
+            match discrete_show_delay {
+                Some(show_delay) => request.discrete(show_delay),
+                None => request,
+            }
+        };
 
         self.on_prepaint(move |bounds, _, _| {
             bounds_writer.set(bounds);
         })
         .on_hover({
-            let trigger_bounds_cell = trigger_bounds_cell.clone();
-            let build_tooltip = build_tooltip.clone();
             move |hovered, window, cx| {
                 if let Some(overlay) = WindowState::tooltip_overlay(window, cx) {
+                    let bounds = trigger_bounds_cell.get();
                     if *hovered {
-                        let bounds = trigger_bounds_cell.get();
                         overlay.update(cx, |o: &mut BaseTooltipOverlay, cx| {
-                            let build = build_tooltip.clone();
-                            let request = BaseTooltipRequest::new(bounds, move |window, cx| {
-                                build(window, cx)
-                            });
-                            let request = match preferred_placement {
-                                Some(placement) => request.placement(placement),
-                                None => request,
-                            };
-                            o.request_show(request, window, cx);
+                            o.request_show(request(bounds), window, cx);
                         });
                     } else {
                         overlay.update(cx, |o: &mut BaseTooltipOverlay, cx| {
-                            o.request_hide(window, cx);
+                            o.request_hide_for(bounds, discrete_show_delay.is_some(), window, cx);
                         });
                     }
                 }
@@ -284,9 +310,7 @@ pub(crate) trait ManagedTooltipExt:
         })
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
             if let Some(overlay) = WindowState::tooltip_overlay(window, cx) {
-                overlay.update(cx, |overlay, cx| {
-                    overlay.hide(cx);
-                });
+                overlay.update(cx, |overlay, cx| overlay.hide(cx));
             }
         })
     }

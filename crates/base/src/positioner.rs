@@ -191,7 +191,7 @@ impl Positioner {
 /// platform needs it stable across tiling changes to size the window), so the
 /// tiling is what says where it actually applies. A server-decorated window
 /// has no frame of its own.
-fn frame_insets(decorations: Decorations, client_inset: Pixels) -> Edges<Pixels> {
+pub(crate) fn frame_insets(decorations: Decorations, client_inset: Pixels) -> Edges<Pixels> {
     match decorations {
         Decorations::Server => Edges::default(),
         Decorations::Client { tiling } => Edges {
@@ -238,6 +238,29 @@ fn resolve(
             }
         }
     }
+}
+
+/// [`Positioner::side`]'s placement, for positioners that lay their popup out themselves:
+/// the preferred side, flipped when it does not fit, centered on the trigger and clamped into
+/// the viewport.
+pub(crate) fn resolve_side(
+    trigger_bounds: Bounds<Pixels>,
+    popup_size: Size<Pixels>,
+    viewport_size: Size<Pixels>,
+    margin: Edges<Pixels>,
+    placement: Option<Placement>,
+) -> ResolvedPosition {
+    resolve(
+        Strategy::Side {
+            trigger_bounds,
+            placement,
+            align: Align::Center,
+            offset: px(0.),
+        },
+        popup_size,
+        viewport_size,
+        margin,
+    )
 }
 
 fn resolve_placement(
@@ -300,7 +323,7 @@ fn side_origin(
     }
 }
 
-fn clamp(
+pub(crate) fn clamp(
     mut bounds: Bounds<Pixels>,
     viewport_size: Size<Pixels>,
     margin: Edges<Pixels>,
