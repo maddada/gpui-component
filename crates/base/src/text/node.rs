@@ -17,8 +17,8 @@ use crate::{
     Scrollbar, ScrollbarMode, ScrollbarThumbStyle, StyledExt, h_flex, v_flex,
     scrollable_mask::horizontal_scroll_area,
     text::{
-        CodeBlockActionsFn, CodeBlockHighlighterFn, LinkClickHandlerFn, MarkdownExtensions,
-        MarkdownNode, TableActionsFn,
+        CodeBlockActionsFn, CodeBlockHighlighterFn, CodeBlockWrapFn, LinkClickHandlerFn,
+        MarkdownExtensions, MarkdownNode, TableActionsFn,
         document::NodeRenderOptions,
         inline::{
             Inline, InlineHighlight, InlineState, combine_highlights, fade_highlights, text_runs,
@@ -1686,6 +1686,7 @@ impl Paragraph {
 #[derive(Debug, Clone)]
 pub struct CodeBlock {
     lang: Option<SharedString>,
+    meta: Option<SharedString>,
     state: Arc<Mutex<InlineState>>,
     highlight_cache: Arc<Mutex<Option<CachedCodeBlockHighlights>>>,
     source_segments: Vec<SourceSegment>,
@@ -1707,7 +1708,10 @@ impl std::fmt::Debug for CachedCodeBlockHighlights {
 
 impl PartialEq for CodeBlock {
     fn eq(&self, other: &Self) -> bool {
-        self.lang == other.lang && self.code() == other.code() && self.span == other.span
+        self.lang == other.lang
+            && self.meta == other.meta
+            && self.code() == other.code()
+            && self.span == other.span
     }
 }
 
@@ -1715,6 +1719,20 @@ impl CodeBlock {
     /// Get the language of the code block.
     pub fn lang(&self) -> Option<SharedString> {
         self.lang.clone()
+    }
+
+    /// Everything the fence wrote after its language, unparsed.
+    ///
+    /// A host that renders code block actions uses it to name the file a fence
+    /// came from (```` ```ts src/main.ts ````, ```` ```json title=package.json ````).
+    pub fn meta(&self) -> Option<SharedString> {
+        self.meta.clone()
+    }
+
+    /// Attach the fence's meta string.
+    pub(crate) fn with_meta(mut self, meta: Option<impl Into<SharedString>>) -> Self {
+        self.meta = meta.map(Into::into);
+        self
     }
 
     /// Get the code content of the code block.
@@ -1746,6 +1764,7 @@ impl CodeBlock {
 
         Self {
             lang,
+            meta: None,
             state,
             highlight_cache: Arc::new(Mutex::new(None)),
             source_segments: vec![],
@@ -1864,54 +1883,123 @@ impl CodeBlock {
     ) -> AnyElement {
         let style = &node_cx.style;
         let leaf_key = self.span.map(|span| TextLeafKey::block(span.start));
+        let actions = node_cx.code_block_actions.clone();
+        // Code is structured text: a line broken at the pane's edge stops
+        // lining up with the lines around it. A host that says this block does
+        // not wrap gets the whole line and scrolls to the rest of it, which is
+        // what an editor does and what a reader comparing two lines needs.
+        let wrap = node_cx
+            .code_block_wrap
+            .as_ref()
+            .is_none_or(|wraps| wraps(self));
+        let mono_font = cx.theme().tokens.typography.mono.clone();
+        let mono_size = cx.theme().tokens.typography.mono_md.size;
+
+        let code = Inline::new(
+            self.state.clone(),
+            vec![],
+            fade_highlights(
+                node_cx
+                    .code_block_highlighter
+                    .as_ref()
+                    .map(|highlighter| self.highlighted_styles(highlighter))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(range, style)| (range, InlineHighlight::from(style)))
+                    .collect(),
+                node_cx.stream_fades(leaf_key),
+            ),
+            node_cx.link_click_handler.clone(),
+        )
+        .range_backgrounds(node_cx.range_backgrounds(leaf_key).to_vec())
+        .reveal(node_cx.reveal_at(leaf_key, 0, self.code().len()));
+
+        // With host actions the padding moves inside, so the header they draw
+        // can span the block's full width and rule off from edge to edge.
+        let body = div().when(actions.is_some(), |this| this.p_3());
+        let body = if wrap {
+            body.child(code)
+        } else {
+            // How far an unwrapped block scrolls: its widest line. A
+            // block-level child would otherwise take exactly the viewport's
+            // width and leave the overflow unreachable. Monospace makes the
+            // longest line the widest one, so only that line is shaped.
+            let mut text_style = window.text_style();
+            text_style.font_family = mono_font.clone();
+            let code_text = self.code();
+            let widest = code_text
+                .lines()
+                .max_by_key(|line| line.chars().count())
+                .unwrap_or_default();
+            let end = widest
+                .char_indices()
+                .nth(MAX_MEASURED_CODE_LINE)
+                .map_or(widest.len(), |(index, _)| index);
+            let widest = &widest[..end];
+            let width = window
+                .text_system()
+                .layout_line(widest, mono_size, &[text_style.to_run(widest.len())], None)
+                .width
+                + if actions.is_some() {
+                    px(CODE_PAD_PX)
+                } else {
+                    Pixels::ZERO
+                };
+            body.whitespace_nowrap()
+                .min_w_full()
+                .w(width)
+                .child(code)
+        };
 
         let block = div()
             .w_full()
             .min_w_0()
-            .p_3()
+            .when(actions.is_none(), |this| this.p_3())
             .bg(style.code_background())
-            .font_family(cx.theme().tokens.typography.mono.clone())
-            .text_size(cx.theme().tokens.typography.mono_md.size)
+            .font_family(mono_font)
+            .text_size(mono_size)
             .relative()
-            .refine_style(&style.code_block())
-            .child(
-                Inline::new(
-                    self.state.clone(),
-                    vec![],
-                    fade_highlights(
-                        node_cx
-                            .code_block_highlighter
-                            .as_ref()
-                            .map(|highlighter| self.highlighted_styles(highlighter))
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|(range, style)| (range, InlineHighlight::from(style)))
-                            .collect(),
-                        node_cx.stream_fades(leaf_key),
-                    ),
-                    node_cx.link_click_handler.clone(),
+            .refine_style(&style.code_block());
+        let body = if wrap {
+            body.into_any_element()
+        } else {
+            let scroll_handle = window
+                .use_keyed_state(
+                    block_element_id("codeblock-scroll-state", self.span, options.ix),
+                    cx,
+                    |_, _| ScrollHandle::default(),
                 )
-                .range_backgrounds(node_cx.range_backgrounds(leaf_key).to_vec())
-                .reveal(node_cx.reveal_at(leaf_key, 0, self.code().len())),
-            );
+                .read(cx)
+                .clone();
+            // The viewport clips and scrolls; the body inside it keeps the
+            // whole line's width.
+            horizontal_scroll_area(
+                block_element_id("codeblock-scroll", self.span, options.ix),
+                &scroll_handle,
+                &StyleRefinement::default(),
+                body,
+            )
+            .into_any_element()
+        };
         // The id scopes the caller's action ids per code block, so plain ids
         // like `"copy"` don't collide across blocks; without actions nothing
         // under the block needs element state.
-        let block = match node_cx.code_block_actions.clone() {
+        let block = match actions {
+            // A host's code block actions are a header row above the code
+            // rather than an overlay on top of it: a block's first line
+            // carries its most important text, and a file name or a language
+            // label has nowhere to go floating over it.
             Some(actions) => block
                 .id(block_element_id("codeblock", self.span, options.ix))
                 .child(
                     div()
                         .id("actions")
-                        .absolute()
-                        .top_2()
-                        .right_2()
-                        .bg(style.code_background())
-                        .rounded(cx.theme().tokens.radius.md)
+                        .w_full()
                         .child(actions(&self, window, cx)),
                 )
+                .child(body)
                 .into_any_element(),
-            None => block.into_any_element(),
+            None => block.child(body).into_any_element(),
         };
 
         gapped(
@@ -1925,6 +2013,12 @@ impl CodeBlock {
     }
 }
 
+/// `p_3` on both sides of an unwrapped block's body.
+const CODE_PAD_PX: f32 = 24.0;
+/// A single line longer than this is measured up to here: past it the scroll is
+/// long enough anyway.
+const MAX_MEASURED_CODE_LINE: usize = 4096;
+
 /// A context for rendering nodes, contains link references.
 #[derive(Default, Clone)]
 pub(crate) struct NodeContext {
@@ -1934,6 +2028,7 @@ pub(crate) struct NodeContext {
     pub(crate) link_refs: HashMap<SharedString, LinkMark>,
     pub(crate) style: Arc<TextViewStyle>,
     pub(crate) code_block_actions: Option<Arc<CodeBlockActionsFn>>,
+    pub(crate) code_block_wrap: Option<Arc<CodeBlockWrapFn>>,
     pub(crate) code_block_highlighter: Option<Arc<CodeBlockHighlighterFn>>,
     pub(crate) table_actions: Option<Arc<TableActionsFn>>,
     pub(crate) image_source: Option<Arc<super::text_view::ImageSourceFn>>,

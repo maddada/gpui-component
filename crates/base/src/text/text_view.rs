@@ -24,6 +24,9 @@ pub(crate) type CodeBlockActionsFn =
 pub(crate) type CodeBlockHighlighterFn =
     dyn Fn(&CodeBlock) -> Vec<(Range<usize>, gpui::HighlightStyle)> + Send + Sync;
 
+/// Type for the per-block decision of whether a fenced block soft-wraps.
+pub(crate) type CodeBlockWrapFn = dyn Fn(&CodeBlock) -> bool + Send + Sync;
+
 /// Application-wide defaults for TextViews that do not provide explicit
 /// presentation or syntax-highlighting overrides.
 #[derive(Clone, Default)]
@@ -133,6 +136,7 @@ pub struct TextView {
     scrollable: bool,
     max_lines: Option<usize>,
     code_block_actions: Option<Arc<CodeBlockActionsFn>>,
+    code_block_wrap: Option<Arc<CodeBlockWrapFn>>,
     code_block_highlighter: Option<Arc<CodeBlockHighlighterFn>>,
     table_actions: Option<Arc<TableActionsFn>>,
     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
@@ -180,6 +184,7 @@ impl TextView {
             scrollable: false,
             max_lines: None,
             code_block_actions: None,
+            code_block_wrap: None,
             code_block_highlighter: None,
             table_actions: None,
             link_click_handler: None,
@@ -204,6 +209,7 @@ impl TextView {
             scrollable: false,
             max_lines: None,
             code_block_actions: None,
+            code_block_wrap: None,
             code_block_highlighter: None,
             table_actions: None,
             link_click_handler: None,
@@ -228,6 +234,7 @@ impl TextView {
             scrollable: false,
             max_lines: None,
             code_block_actions: None,
+            code_block_wrap: None,
             code_block_highlighter: None,
             table_actions: None,
             link_click_handler: None,
@@ -327,6 +334,19 @@ impl TextView {
         self
     }
 
+    /// Decide per fenced block whether its lines soft-wrap.
+    ///
+    /// Without this every block wraps, which is what a reader of prose-shaped
+    /// output wants. A host that offers a wrap control answers `false` for the
+    /// blocks the reader turned it off for, and those scroll sideways instead.
+    pub fn code_block_wrap<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&CodeBlock) -> bool + Send + Sync + 'static,
+    {
+        self.code_block_wrap = Some(Arc::new(f));
+        self
+    }
+
     /// Adds opt-in syntax highlighting for fenced code blocks.
     ///
     /// Returned byte ranges are relative to [`CodeBlock::code`]. Invalid
@@ -336,6 +356,24 @@ impl TextView {
         F: Fn(&CodeBlock) -> Vec<(Range<usize>, gpui::HighlightStyle)> + Send + Sync + 'static,
     {
         self.code_block_highlighter = Some(Arc::new(highlighter));
+        self
+    }
+
+    /// [`Self::code_block_highlighter`] with a highlighter the caller already
+    /// shares.
+    ///
+    /// A fenced block keeps its styles for as long as the same highlighter
+    /// (by pointer) asks for them, so a caller that builds its view every
+    /// frame hands the same one over rather than a new closure each time,
+    /// which would re-highlight every block on every frame.
+    #[doc(hidden)]
+    pub fn shared_code_block_highlighter(
+        mut self,
+        highlighter: Arc<
+            dyn Fn(&CodeBlock) -> Vec<(Range<usize>, gpui::HighlightStyle)> + Send + Sync,
+        >,
+    ) -> Self {
+        self.code_block_highlighter = Some(highlighter);
         self
     }
 
@@ -620,6 +658,7 @@ impl Element for TextView {
 
         state.update(cx, |state, cx| {
             state.code_block_actions = self.code_block_actions.clone();
+            state.code_block_wrap = self.code_block_wrap.clone();
             state.code_block_highlighter = code_block_highlighter;
             state.table_actions = self.table_actions.clone();
             state.link_click_handler = self.link_click_handler.clone();

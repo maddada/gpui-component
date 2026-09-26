@@ -136,7 +136,19 @@ impl TextView {
         self.inner = self.inner.code_block_actions(f);
         self
     }
-    /// Renders an element in the corner of every table.
+    /// Decides per fenced block whether its lines soft-wrap.
+    ///
+    /// Without this every block wraps. A host that offers a wrap control
+    /// answers `false` for the blocks the reader turned it off for, and those
+    /// scroll sideways instead.
+    pub fn code_block_wrap<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&CodeBlock) -> bool + Send + Sync + 'static,
+    {
+        self.inner = self.inner.code_block_wrap(f);
+        self
+    }
+    /// Renders an element below every table.
     pub fn table_actions<F, E>(mut self, f: F) -> Self
     where
         F: Fn(&TableData, &mut Window, &mut App) -> E + Send + Sync + 'static,
@@ -252,8 +264,8 @@ impl Element for TextView {
                 &style.highlight_theme,
                 &crate::highlighter::HighlightTheme::default_light(),
             ) {
-                inner = inner.code_block_highlighter(super::component_code_block_highlighter(
-                    style.highlight_theme.clone(),
+                inner = inner.shared_code_block_highlighter(shared_highlighter(
+                    &style.highlight_theme,
                 ));
             }
             inner = inner.style(resolve_component_style(
@@ -305,6 +317,49 @@ impl Element for TextView {
     ) {
         element.element.paint(window, cx);
     }
+}
+
+#[cfg(feature = "tree-sitter")]
+type SharedHighlighter = std::sync::Arc<
+    dyn Fn(&CodeBlock) -> Vec<(std::ops::Range<usize>, HighlightStyle)> + Send + Sync,
+>;
+
+/// The code block highlighter for `theme`, the same one for as long as the
+/// caller hands over the same theme.
+///
+/// A fenced block keeps its styles only while the same highlighter (by
+/// pointer) asks for them. Building a new closure in every `request_layout`,
+/// which is every frame, made every block of every view with its own theme
+/// highlight again on every frame.
+#[cfg(feature = "tree-sitter")]
+fn shared_highlighter(
+    theme: &std::sync::Arc<crate::highlighter::HighlightTheme>,
+) -> SharedHighlighter {
+    use std::cell::RefCell;
+    use std::sync::Arc;
+
+    // A theme is kept alive by its entry, so a pointer never names two themes.
+    const KEEP: usize = 8;
+    thread_local! {
+        static HIGHLIGHTERS: RefCell<Vec<(Arc<crate::highlighter::HighlightTheme>, SharedHighlighter)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    HIGHLIGHTERS.with(|highlighters| {
+        let mut highlighters = highlighters.borrow_mut();
+        if let Some((_, highlighter)) = highlighters
+            .iter()
+            .find(|(cached, _)| Arc::ptr_eq(cached, theme))
+        {
+            return highlighter.clone();
+        }
+        let highlighter: SharedHighlighter =
+            Arc::new(super::component_code_block_highlighter(theme.clone()));
+        if highlighters.len() >= KEEP {
+            highlighters.remove(0);
+        }
+        highlighters.push((theme.clone(), highlighter.clone()));
+        highlighter
+    })
 }
 
 /// Folds a component [`TextViewStyle`] onto the one the theme already derived.
