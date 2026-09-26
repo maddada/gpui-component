@@ -555,6 +555,23 @@ impl InputPresentation {
 impl<M: InputModeKind> EventEmitter<InputEvent> for InputBaseState<M> {}
 
 impl<M: InputModeKind> InputBaseState<M> {
+    /// Set the validation function of the input field.
+    ///
+    /// Every kind of field checks it on each edit, so a textarea can cap its
+    /// text the same way a single-line input does.
+    pub fn validate(mut self, f: impl Fn(&str, &mut App) -> bool + 'static) -> Self {
+        self.validate = Some(Box::new(f));
+        self
+    }
+
+    pub fn set_validator(
+        &mut self,
+        validate: impl Fn(&str, &mut App) -> bool + 'static,
+        _cx: &mut Context<Self>,
+    ) {
+        self.validate = Some(Box::new(validate));
+    }
+
     #[doc(hidden)]
     pub fn cursor_layout(&self) -> Option<(Bounds<Pixels>, Pixels)> {
         let layout = self.last_layout.as_ref()?;
@@ -9567,20 +9584,6 @@ impl InputBaseState<crate::input::InputMode> {
         _cx: &mut Context<Self>,
     ) {
         self.pattern = Some(pattern);
-    }
-
-    /// Set the validation function of the input field.
-    pub fn validate(mut self, f: impl Fn(&str, &mut App) -> bool + 'static) -> Self {
-        self.validate = Some(Box::new(f));
-        self
-    }
-
-    pub fn set_validator(
-        &mut self,
-        validate: impl Fn(&str, &mut App) -> bool + 'static,
-        _cx: &mut Context<Self>,
-    ) {
-        self.validate = Some(Box::new(validate));
     }
 
     /// Set the step value of the [`super::NumberInput`] for increment/decrement.
