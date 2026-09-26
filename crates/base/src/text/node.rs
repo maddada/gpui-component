@@ -7,7 +7,7 @@ use std::{
 use gpui::{
     AnyElement, App, DefiniteLength, Div, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla,
     Image, ImageFormat, ImageSource, InteractiveElement as _, IntoElement, IsZero as _, Length,
-    ObjectFit, Overflow, ParentElement, Pixels, Rems, ScrollHandle, SharedString, SharedUri,
+    MouseButton, ObjectFit, Overflow, ParentElement, Pixels, Rems, ScrollHandle, SharedString, SharedUri,
     StatefulInteractiveElement, StyleRefinement, Styled, StyledImage as _, WhiteSpace, Window, div,
     img, prelude::FluentBuilder as _, px, relative, rems,
 };
@@ -27,7 +27,7 @@ use crate::{
         inline_flow::{InlineFlow, InlineFlowItem, slice_ranges},
         range_highlight::{RangeHighlightFrame, RevealAt, RevealRequest},
         stream_fade::{StreamFadeFrame, TextLeafKey},
-        text_view::handle_link_click,
+        text_view::{handle_link_click, is_claimed_secondary_click},
     },
     theme::ActiveTheme as _,
 };
@@ -2033,6 +2033,7 @@ pub(crate) struct NodeContext {
     pub(crate) table_actions: Option<Arc<TableActionsFn>>,
     pub(crate) image_source: Option<Arc<super::text_view::ImageSourceFn>>,
     pub(crate) link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+    pub(crate) link_secondary_click: Option<Arc<super::text_view::LinkSecondaryClickFn>>,
     pub(crate) markdown_extensions: Arc<MarkdownExtensions>,
     /// This frame's streamed fade-in, when any text is still fading.
     pub(crate) stream_fade: Option<Arc<StreamFadeFrame>>,
@@ -2172,6 +2173,7 @@ impl Paragraph {
                 node_cx.link_click_handler.clone(),
             )
             .default_cursor(node_cx.style.default_cursor())
+            .link_secondary_click(node_cx.link_secondary_click.clone())
             .into_any_element();
         }
 
@@ -2246,6 +2248,7 @@ impl Paragraph {
                     );
                 }
                 let link_click_handler = node_cx.link_click_handler.clone();
+                let link_secondary_click = node_cx.link_secondary_click.clone();
                 child_nodes.push(
                     img(node_cx.image_source(image))
                         .id(ix)
@@ -2257,6 +2260,8 @@ impl Paragraph {
                             let aux_link = link.clone();
                             let aux_link_click_handler = link_click_handler.clone();
                             let default_cursor = node_cx.style.default_cursor();
+                            let has_secondary = link_secondary_click.is_some();
+                            let secondary_link = link.clone();
                             this.when(!default_cursor, |this| this.cursor_pointer())
                                 .on_click(move |event, window, cx| {
                                     crate::TextSelection::end(window, cx);
@@ -2270,6 +2275,9 @@ impl Paragraph {
                                     );
                                 })
                                 .on_aux_click(move |event, window, cx| {
+                                    if is_claimed_secondary_click(event, has_secondary) {
+                                        return;
+                                    }
                                     crate::TextSelection::end(window, cx);
                                     cx.stop_propagation();
                                     handle_link_click(
@@ -2279,6 +2287,13 @@ impl Paragraph {
                                         window,
                                         cx,
                                     );
+                                })
+                                .when_some(link_secondary_click.clone(), |this, secondary| {
+                                    this.on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                                        crate::TextSelection::end(window, cx);
+                                        cx.stop_propagation();
+                                        secondary(&secondary_link.url, event.modifiers, window, cx);
+                                    })
                                 })
                         })
                         .into_any_element(),

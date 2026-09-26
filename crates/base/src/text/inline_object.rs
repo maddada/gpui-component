@@ -340,6 +340,25 @@ impl Element for InlineObject {
             let link_hitbox = hitbox.clone();
             let link_view = view.clone();
             let handler = self.link_click_handler.clone();
+            let secondary = view
+                .as_ref()
+                .and_then(|view| view.read(cx).link_secondary_click.clone());
+            let has_secondary = secondary.is_some();
+            if let Some(secondary) = secondary {
+                let secondary_hitbox = hitbox.clone();
+                let secondary_url = link.url.clone();
+                window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                    if event.button != MouseButton::Right
+                        || !phase.bubble()
+                        || !secondary_hitbox.is_hovered(window)
+                    {
+                        return;
+                    }
+                    crate::TextSelection::end(window, cx);
+                    cx.stop_propagation();
+                    secondary(&secondary_url, event.modifiers, window, cx);
+                });
+            }
             window.on_mouse_event(move |event: &gpui::MouseUpEvent, phase, window, cx| {
                 if !phase.bubble()
                     || !link_hitbox.is_hovered(window)
@@ -349,8 +368,6 @@ impl Element for InlineObject {
                 {
                     return;
                 }
-                crate::TextSelection::end(window, cx);
-                cx.stop_propagation();
                 let click = gpui::ClickEvent::Mouse(gpui::MouseClickEvent {
                     down: MouseDownEvent {
                         button: event.button,
@@ -361,6 +378,11 @@ impl Element for InlineObject {
                     },
                     up: event.clone(),
                 });
+                if super::text_view::is_claimed_secondary_click(&click, has_secondary) {
+                    return;
+                }
+                crate::TextSelection::end(window, cx);
+                cx.stop_propagation();
                 super::text_view::handle_link_click(&handler, link.url.clone(), click, window, cx);
             });
         }

@@ -24,7 +24,7 @@ use crate::{
     text::range_highlight::RevealAt,
     text::selection::word_range_at,
     text::state::LineSpan,
-    text::text_view::{LinkClickHandlerFn, handle_link_click},
+    text::text_view::{LinkClickHandlerFn, handle_link_click, is_claimed_secondary_click},
 };
 
 /// The style applied to one range of inline text.
@@ -223,6 +223,7 @@ pub(super) struct Inline {
 /// The inline text state, used RefCell to keep the selection state.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct InlineState {
+    /// Index of the link under the pointer as of the last mouse move.
     hovered_index: Option<usize>,
     /// The text that actually rendering, matched with selection.
     pub(super) text: SharedString,
@@ -464,6 +465,16 @@ impl Inline {
             line,
             line.top() >= visible.top() && line.bottom() <= visible.bottom(),
         );
+    }
+
+    /// Index into `links` of the link at the given mouse position.
+    fn link_index_for_position(
+        layout: &TextLayout,
+        links: &[(Range<usize>, LinkMark)],
+        position: Point<Pixels>,
+    ) -> Option<usize> {
+        let offset = layout.index_for_position(position).ok()?;
+        links.iter().position(|(range, _)| range.contains(&offset))
     }
 
     /// Get link at given mouse position.
@@ -1068,25 +1079,67 @@ impl Element for Inline {
             });
         }
 
-        // mouse move, update hovered link
+        // A run without links needs no link listeners at all.
+        if self.links.is_empty() {
+            drop(state);
+            self.retain_styled_text();
+            return;
+        }
+
+        // Mouse move: repaint only when the pointer enters or leaves a link,
+        // so the cursor set above follows it. Notifying on every glyph the
+        // pointer crosses would redraw the whole view on each mouse move.
         window.on_mouse_event({
             let hitbox = hitbox.clone();
             let text_layout = text_layout.clone();
-            let mut hovered_index = state.hovered_index;
+            let links = self.links.clone();
+            let inline_state = self.state.clone();
             move |event: &MouseMoveEvent, phase, window, cx| {
-                if !phase.bubble() || !hitbox.is_hovered(window) {
+                if !phase.bubble() {
                     return;
                 }
-
-                let current = hovered_index;
-                let updated = text_layout.index_for_position(event.position).ok();
-                //  notify update when hovering over different links
-                if current != updated {
-                    hovered_index = updated;
+                let updated = hitbox
+                    .is_hovered(window)
+                    .then(|| Self::link_index_for_position(&text_layout, &links, event.position))
+                    .flatten();
+                let Ok(mut inline_state) = inline_state.lock() else {
+                    return;
+                };
+                if inline_state.hovered_index != updated {
+                    inline_state.hovered_index = updated;
                     cx.notify(current_view);
                 }
             }
         });
+
+        let link_secondary_click = GlobalState::global(cx)
+            .text_view_state()
+            .and_then(|state| state.read(cx).link_secondary_click.clone());
+
+        // A secondary press on a link, for the host's own link menu. It is
+        // answered on the press, before the release could start anything.
+        if let Some(secondary) = link_secondary_click.clone() {
+            window.on_mouse_event({
+                let hitbox = hitbox.clone();
+                let text_layout = text_layout.clone();
+                let links = self.links.clone();
+                move |event: &MouseDownEvent, phase, window, cx| {
+                    if event.button != MouseButton::Right
+                        || !phase.bubble()
+                        || !hitbox.is_hovered(window)
+                    {
+                        return;
+                    }
+                    let Some(link) = Self::link_for_position(&text_layout, &links, event.position)
+                    else {
+                        return;
+                    };
+                    TextSelection::end(window, cx);
+                    cx.stop_propagation();
+                    secondary(&link.url, event.modifiers, window, cx);
+                }
+            });
+        }
 
         if !is_selection {
             // click to open link
@@ -1096,6 +1149,7 @@ impl Element for Inline {
                 let hitbox = hitbox.clone();
                 let text_view_state = GlobalState::global(cx).text_view_state().cloned();
                 let link_click_handler = self.link_click_handler.clone();
+                let has_secondary = link_secondary_click.is_some();
 
                 move |event: &MouseUpEvent, phase, window, cx| {
                     if !phase.bubble() || !hitbox.is_hovered(window) {
@@ -1111,8 +1165,6 @@ impl Element for Inline {
                     if let Some(link) =
                         Self::link_for_position(&text_layout, &links, event.position)
                     {
-                        TextSelection::end(window, cx);
-                        cx.stop_propagation();
                         let click = ClickEvent::Mouse(MouseClickEvent {
                             down: MouseDownEvent {
                                 button: event.button,
@@ -1123,6 +1175,11 @@ impl Element for Inline {
                             },
                             up: event.clone(),
                         });
+                        if is_claimed_secondary_click(&click, has_secondary) {
+                            return;
+                        }
+                        TextSelection::end(window, cx);
+                        cx.stop_propagation();
                         handle_link_click(&link_click_handler, link.url, click, window, cx);
                     }
                 }

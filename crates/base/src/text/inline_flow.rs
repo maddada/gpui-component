@@ -9,12 +9,14 @@ use unicode_segmentation::UnicodeSegmentation as _;
 use gpui::{
     AbsoluteLength, AnyElement, App, AvailableSpace, Bounds, DefiniteLength, Element, ElementId,
     GlobalElementId, Hsla, ImageSource, InspectorElementId, InteractiveElement as _, IntoElement,
-    LayoutId, LineFragment as WrapLineFragment, ObjectFit, Pixels, Refineable as _, ShapedLine,
+    LayoutId, LineFragment as WrapLineFragment, MouseButton, ObjectFit, Pixels, Refineable as _, ShapedLine,
     SharedString, Size, StatefulInteractiveElement as _, Styled, StyledImage as _, TextRun,
     TextStyle, WhiteSpace, Window, img, point, prelude::FluentBuilder as _, px, relative, size,
 };
 
-use crate::text::text_view::{LinkClickHandlerFn, handle_link_click};
+use crate::text::text_view::{
+    LinkClickHandlerFn, LinkSecondaryClickFn, handle_link_click, is_claimed_secondary_click,
+};
 
 use super::{
     inline::{Inline, InlineHighlight, InlineState, text_runs, text_size_ranges},
@@ -33,6 +35,8 @@ pub(super) struct InlineFlow {
     /// [`TextViewStyle::default_cursor`](super::TextViewStyle::default_cursor):
     /// keep the plain arrow over linked images instead of the pointing hand.
     default_cursor: bool,
+    /// [`TextView::on_link_secondary_click`](super::TextView::on_link_secondary_click).
+    link_secondary_click: Option<Arc<LinkSecondaryClickFn>>,
 }
 
 pub(super) type InlineRenderer = dyn Fn(&super::InlineRenderContext, &mut Window, &mut App) -> Option<super::InlineElement>
@@ -255,7 +259,15 @@ impl InlineFlow {
             items,
             link_click_handler,
             default_cursor: false,
+            link_secondary_click: None,
         }
+    }
+
+    /// A secondary (right) press on a linked image; see
+    /// [`TextView::on_link_secondary_click`](super::TextView::on_link_secondary_click).
+    pub(super) fn link_secondary_click(mut self, handler: Option<Arc<LinkSecondaryClickFn>>) -> Self {
+        self.link_secondary_click = handler;
+        self
     }
 
     /// See [`TextViewStyle::default_cursor`](super::TextViewStyle::default_cursor).
@@ -271,6 +283,7 @@ impl InlineFlow {
         _title: &str,
         size: Size<Pixels>,
         link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+        link_secondary_click: Option<Arc<LinkSecondaryClickFn>>,
         default_cursor: bool,
     ) -> AnyElement {
         img(source.clone())
@@ -282,6 +295,8 @@ impl InlineFlow {
             .when_some(link.clone(), |this, link| {
                 let aux_link = link.clone();
                 let aux_link_click_handler = link_click_handler.clone();
+                let has_secondary = link_secondary_click.is_some();
+                let secondary_link = link.clone();
                 this.when(!default_cursor, |this| this.cursor_pointer())
                     .on_click(move |event, window, cx| {
                         crate::TextSelection::end(window, cx);
@@ -295,6 +310,9 @@ impl InlineFlow {
                         );
                     })
                     .on_aux_click(move |event, window, cx| {
+                        if is_claimed_secondary_click(event, has_secondary) {
+                            return;
+                        }
                         crate::TextSelection::end(window, cx);
                         cx.stop_propagation();
                         handle_link_click(
@@ -304,6 +322,13 @@ impl InlineFlow {
                             window,
                             cx,
                         );
+                    })
+                    .when_some(link_secondary_click, |this, secondary| {
+                        this.on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                            crate::TextSelection::end(window, cx);
+                            cx.stop_propagation();
+                            secondary(&secondary_link.url, event.modifiers, window, cx);
+                        })
                     })
             })
             .into_any_element()
@@ -641,6 +666,7 @@ impl Element for InlineFlow {
                         title.as_str(),
                         fragment_size,
                         self.link_click_handler.clone(),
+                        self.link_secondary_click.clone(),
                         self.default_cursor,
                     );
                     element.prepaint_as_root(

@@ -83,6 +83,17 @@ pub(crate) type ImageSourceFn = dyn Fn(&gpui::SharedUri) -> gpui::ImageSource + 
 pub(crate) type LinkClickHandlerFn =
     dyn Fn(&SharedString, &ClickEvent, &mut Window, &mut App) + Send + Sync;
 
+/// Handler for a secondary (right) press on a link.
+pub(crate) type LinkSecondaryClickFn =
+    dyn Fn(&str, gpui::Modifiers, &mut Window, &mut App) + Send + Sync;
+
+/// Whether a click belongs to [`TextView::on_link_secondary_click`] rather
+/// than to the link click handler: a right click, when the host answers the
+/// right press itself (with a context menu, say), must not also open the link.
+pub(crate) fn is_claimed_secondary_click(event: &ClickEvent, has_secondary: bool) -> bool {
+    has_secondary && event.is_right_click()
+}
+
 /// Kept by the element only, so unlike the handlers the state carries, it
 /// may hold a `ScrollHandle`.
 pub(crate) type RevealHandlerFn = dyn Fn(Bounds<Pixels>, &mut Window, &mut App);
@@ -140,6 +151,7 @@ pub struct TextView {
     code_block_highlighter: Option<Arc<CodeBlockHighlighterFn>>,
     table_actions: Option<Arc<TableActionsFn>>,
     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+    link_secondary_click: Option<Arc<LinkSecondaryClickFn>>,
     image_source: Option<Arc<ImageSourceFn>>,
     reveal_handler: Option<Rc<RevealHandlerFn>>,
     markdown_extensions: Arc<MarkdownExtensions>,
@@ -188,6 +200,7 @@ impl TextView {
             code_block_highlighter: None,
             table_actions: None,
             link_click_handler: None,
+            link_secondary_click: None,
             image_source: None,
             reveal_handler: None,
             markdown_extensions: Arc::default(),
@@ -213,6 +226,7 @@ impl TextView {
             code_block_highlighter: None,
             table_actions: None,
             link_click_handler: None,
+            link_secondary_click: None,
             image_source: None,
             reveal_handler: None,
             markdown_extensions: Arc::default(),
@@ -238,6 +252,7 @@ impl TextView {
             code_block_highlighter: None,
             table_actions: None,
             link_click_handler: None,
+            link_secondary_click: None,
             image_source: None,
             reveal_handler: None,
             markdown_extensions: Arc::default(),
@@ -401,6 +416,19 @@ impl TextView {
         F: Fn(&SharedString, &ClickEvent, &mut Window, &mut App) + Send + Sync + 'static,
     {
         self.link_click_handler = Some(Arc::new(handler));
+        self
+    }
+
+    /// Let the host answer a secondary (right) press on a link, a linked
+    /// image or an inline object carrying a link, for example with a context
+    /// menu. The handler runs on the press, the way desktop context menus
+    /// open, with the press position at `window.mouse_position()`; the right
+    /// click that follows is not handed to [`Self::on_link_click`].
+    pub fn on_link_secondary_click<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&str, gpui::Modifiers, &mut Window, &mut App) + Send + Sync + 'static,
+    {
+        self.link_secondary_click = Some(Arc::new(handler));
         self
     }
 
@@ -662,6 +690,7 @@ impl Element for TextView {
             state.code_block_highlighter = code_block_highlighter;
             state.table_actions = self.table_actions.clone();
             state.link_click_handler = self.link_click_handler.clone();
+            state.link_secondary_click = self.link_secondary_click.clone();
             state.image_source = self.image_source.clone();
             state.set_markdown_extensions(self.markdown_extensions.clone(), cx);
             if let Some(motion) = &self.motion {

@@ -165,6 +165,17 @@ impl TextView {
         self.inner = self.inner.on_link_click(f);
         self
     }
+    /// Answers a secondary (right) press on a link, a linked image or a linked
+    /// inline object, for example with a context menu. The handler runs on
+    /// the press, with the press position at `window.mouse_position()`; the
+    /// right click that follows is not handed to [`Self::on_link_click`].
+    pub fn on_link_secondary_click<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&str, gpui::Modifiers, &mut Window, &mut App) + Send + Sync + 'static,
+    {
+        self.inner = self.inner.on_link_secondary_click(f);
+        self
+    }
     /// Scrolls a container that ignores scroll requests to the line of
     /// `TextViewState::reveal_range`, with the line's window bounds.
     pub fn on_reveal<F>(mut self, f: F) -> Self
