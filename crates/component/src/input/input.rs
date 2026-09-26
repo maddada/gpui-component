@@ -94,6 +94,38 @@ fn exposes_accessibility_value(masked: bool, content_type: Option<InputContentTy
         )
 }
 
+/// `24rem`, the measure every tooltip in the app wraps at, so a long reference
+/// destination reads as a paragraph instead of one line across the window.
+const INLINE_REPLACEMENT_TOOLTIP_MAX_WIDTH: gpui::Pixels = px(384.);
+
+/// Shows the hovered inline replacement's tooltip in the window's managed
+/// tooltip overlay, anchored to the pill.
+///
+/// The engine reports the pill because a replacement is painted text, not an
+/// element that could carry `.tooltip()` itself.
+fn inline_replacement_tooltip_handler() -> gpui_base::input::InlineReplacementTooltipHandler {
+    Rc::new(|_previous, shown, window, cx| {
+        let Some(overlay) = crate::root::WindowState::tooltip_overlay(window, cx) else {
+            return;
+        };
+        overlay.update(cx, |overlay, cx| match shown {
+            Some((text, bounds)) => {
+                let request = gpui_base::TooltipRequest::new(bounds, move |window, cx| {
+                    crate::tooltip::Tooltip::new(text.clone())
+                        .max_w(INLINE_REPLACEMENT_TOOLTIP_MAX_WIDTH)
+                        .build(window, cx)
+                });
+                overlay.request_show(request, window, cx);
+            }
+            // Integration point: the managed tooltip port restores a hide keyed
+            // by trigger bounds (the fork's `request_hide(bounds, ..)`), which
+            // keeps a late pill leave from hiding the next trigger's tooltip;
+            // pass `_previous`'s bounds to it then.
+            None => overlay.request_hide(window, cx),
+        });
+    })
+}
+
 /// Returns `(background, foreground)` colors for input-like components.
 pub(crate) fn input_style(disabled: bool, cx: &App) -> (Hsla, Hsla) {
     if disabled {
@@ -553,6 +585,7 @@ impl RenderOnce for Input {
             ),
             cx,
         );
+        state.install_inline_replacement_tooltip(Some(inline_replacement_tooltip_handler()), cx);
         // Which kind of input this registers as follows from the state itself.
         sync_focused_input_registry(&state, window, cx);
 

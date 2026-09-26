@@ -63,6 +63,15 @@ impl TextInputState {
             .install_token_presentation(renderer, listener, secret)))
     }
 
+    pub(crate) fn install_inline_replacement_tooltip(
+        &self,
+        handler: Option<gpui_base::input::InlineReplacementTooltipHandler>,
+        cx: &mut App,
+    ) {
+        dispatch!(self, |state| state.update(cx, |state, _| state
+            .install_inline_replacement_tooltip(handler)))
+    }
+
     pub(crate) fn entity_id(&self) -> gpui::EntityId {
         dispatch!(self, |state| state.entity_id())
     }
