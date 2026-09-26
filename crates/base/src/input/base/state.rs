@@ -17,6 +17,9 @@ use std::cell::Cell;
 use std::ops::Range;
 use std::rc::Rc;
 use sum_tree::Bias;
+
+/// A styled control's paste handler: returns whether it took the paste.
+pub type PasteHook = Rc<dyn Fn(&ClipboardItem, &mut Window, &mut App) -> bool>;
 use unicode_segmentation::*;
 
 use super::{
@@ -360,6 +363,9 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(super) inline_replacement_tooltip: Option<(SharedString, Bounds<Pixels>)>,
     pub(super) inline_replacement_tooltip_handler:
         Option<super::inline_replacement::InlineReplacementTooltipHandler>,
+    /// The styled control's `on_paste` handler, offered a platform paste
+    /// (the web's DOM paste event) before its text is inserted.
+    pub(super) paste_hook: Option<PasteHook>,
     /// The start offset of a pressed token, with the document revision and
     /// pointer position at the press.
     pub(super) pressed_token: Option<(usize, u64, Point<Pixels>)>,
@@ -747,6 +753,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             inline_replacement_hits: Vec::new(),
             inline_replacement_tooltip: None,
             inline_replacement_tooltip_handler: None,
+            paste_hook: None,
             pressed_token: None,
             selections: Selections::default(),
             selected_word_range: None,
@@ -2701,7 +2708,24 @@ impl<M: InputModeKind> InputBaseState<M> {
         let Some(clipboard) = cx.read_from_clipboard() else {
             return;
         };
-        let mut new_text = clipboard.text().unwrap_or_default();
+        self.insert_pasted_text(clipboard.text().unwrap_or_default(), window, cx);
+    }
+
+    /// Install the styled control's paste handler. Not part of the supported API.
+    #[doc(hidden)]
+    pub fn install_paste_hook(&mut self, hook: Option<PasteHook>) {
+        self.paste_hook = hook;
+    }
+
+    /// Insert pasted text the way the Paste action does: one atomic edit,
+    /// newlines dropped in a single-line field, one line per cursor when the
+    /// counts match.
+    fn insert_pasted_text(
+        &mut self,
+        mut new_text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // A paste is one atomic edit, never part of a typing run.
         self.undo_manager.set_pending_intent(EditIntent::Atomic);
 
@@ -3827,6 +3851,30 @@ impl<M: InputModeKind> InputBaseState<M> {
 }
 
 impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+    /// A paste the platform delivers itself (the web's DOM paste event, with
+    /// any pasted images) rather than through the Paste action. The styled
+    /// control's `on_paste` handler sees it first, the same as a Paste action,
+    /// and runs after this update because hosts read the field while handling
+    /// a paste.
+    fn paste(&mut self, item: ClipboardItem, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_editable() {
+            return;
+        }
+        let Some(hook) = self.paste_hook.clone() else {
+            self.insert_pasted_text(item.text().unwrap_or_default(), window, cx);
+            return;
+        };
+        let state = cx.entity();
+        window.defer(cx, move |window, cx| {
+            if hook(&item, window, cx) {
+                return;
+            }
+            state.update(cx, |state, cx| {
+                state.insert_pasted_text(item.text().unwrap_or_default(), window, cx)
+            });
+        });
+    }
+
     fn text_for_range(
         &mut self,
         range_utf16: Range<usize>,

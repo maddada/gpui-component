@@ -437,9 +437,9 @@ impl Input {
     /// belong in app-owned state beside the input (e.g. `Attachment`s), never
     /// inside it.
     ///
-    /// Known limit: on web `read_from_clipboard()` is `None` (text arrives
-    /// through the platform input handler); image paste there needs
-    /// `read_from_clipboard_async` and permission, out of scope here.
+    /// On the web the paste arrives as a DOM paste event with its text and
+    /// images; the engine offers that item to this handler too, right after
+    /// the event, and inserts the text itself when the handler returns `false`.
     pub fn on_paste(
         mut self,
         handler: impl Fn(&gpui::ClipboardItem, &mut Window, &mut App) -> bool + 'static,
@@ -706,6 +706,9 @@ impl RenderOnce for Input {
             .paste_handler
             .clone()
             .filter(|_| state.presentation(cx).is_editable());
+        // A platform paste (the web) reaches the engine without the Paste
+        // action, so the engine offers it to the same handler.
+        state.install_paste_hook(paste_handler.clone(), cx);
         let mut overlays = state.render_overlays(window, cx);
         overlays
             .floating

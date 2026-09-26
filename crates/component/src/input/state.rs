@@ -72,6 +72,15 @@ impl TextInputState {
             .install_inline_replacement_tooltip(handler)))
     }
 
+    pub(crate) fn install_paste_hook(
+        &self,
+        hook: Option<gpui_base::input::PasteHook>,
+        cx: &mut App,
+    ) {
+        dispatch!(self, |state| state
+            .update(cx, |state, _| state.install_paste_hook(hook)))
+    }
+
     pub(crate) fn entity_id(&self) -> gpui::EntityId {
         dispatch!(self, |state| state.entity_id())
     }
