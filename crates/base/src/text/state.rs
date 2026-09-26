@@ -126,8 +126,6 @@ pub struct TextViewState {
     pub(super) is_selecting: bool,
     /// Logical ranges retained across an explicitly requested resource reflow.
     pub(super) preserve_inline_selection: bool,
-    multi_click_selection: Option<TextViewMultiClickSelection>,
-    selected_text_override: Option<String>,
     select_all: bool,
     pub(super) auto_scroll: AutoScroll,
     pub(super) selection_adapter: TextViewSelectionAdapter,
@@ -233,8 +231,6 @@ impl TextViewState {
             entity_id: cx.entity_id(),
             focus_handle,
             bounds: Bounds::default(),
-            multi_click_selection: None,
-            selected_text_override: None,
             select_all: false,
             selectable: false,
             selection_format: SelectionFormat::default(),
@@ -473,16 +469,6 @@ impl TextViewState {
             }
 
             return self.parsed_content.document.text();
-        }
-
-        // A multi-click stores the plain text it selected, which is a shortcut
-        // past the block walk. Source mode cannot take it: the word it stored
-        // has lost its markup. The click also set the inline selection it came
-        // from, so the walk reconstructs the same range with the markup intact.
-        if format != SelectionFormat::Source
-            && let Some(text) = &self.selected_text_override
-        {
-            return text.clone();
         }
 
         self.parsed_content.document.selected_text(format, blocks)
@@ -745,12 +731,10 @@ impl TextViewState {
         &self.focus_handle
     }
 
-    /// Whether this view has a view-local selection (select-all, multi-click, or override),
+    /// Whether this view has a view-local selection (select-all),
     /// independent of the window-level selection.
     pub(super) fn has_view_selection(&self) -> bool {
         self.select_all
-            || self.multi_click_selection.is_some()
-            || self.selected_text_override.is_some()
     }
 
     pub(super) fn stop_auto_scroll(&mut self) {
@@ -759,8 +743,6 @@ impl TextViewState {
 
     pub(super) fn reset_selection(&mut self) {
         self.preserve_inline_selection = false;
-        self.multi_click_selection = None;
-        self.selected_text_override = None;
         self.select_all = false;
         self.is_selecting = false;
         self.auto_scroll.stop();
@@ -791,49 +773,11 @@ impl TextViewState {
 
     /// Select all rendered text in this view.
     pub fn select_all(&mut self, cx: &mut Context<Self>) {
-        self.multi_click_selection = None;
-        self.selected_text_override = None;
         self.select_all = true;
         self.is_selecting = false;
         self.auto_scroll.stop();
         self.selection_adapter.set_local_selection(true, cx);
         cx.notify();
-    }
-
-    pub(crate) fn set_multi_click_selection(
-        &mut self,
-        pos: Point<Pixels>,
-        kind: TextViewMultiClickKind,
-        selected_text: String,
-        cx: &mut App,
-    ) {
-        self.preserve_inline_selection = false;
-        let scroll_offset = self.scroll_offset();
-        let pos = pos - self.bounds.origin - scroll_offset;
-        self.multi_click_selection = Some(TextViewMultiClickSelection {
-            pos,
-            kind,
-            line_bounds: None,
-        });
-        self.selected_text_override = Some(selected_text);
-        self.select_all = false;
-        self.is_selecting = false;
-        self.auto_scroll.stop();
-        self.selection_adapter.set_local_selection(true, cx);
-    }
-
-    pub(crate) fn set_multi_click_line(&mut self, bounds: Bounds<Pixels>, cx: &mut App) {
-        self.set_multi_click_selection(
-            bounds.center(),
-            TextViewMultiClickKind::Line,
-            String::new(),
-            cx,
-        );
-        self.selected_text_override = None;
-        let offset = self.bounds.origin + self.scroll_offset();
-        if let Some(selection) = self.multi_click_selection.as_mut() {
-            selection.line_bounds = Some(Bounds::new(bounds.origin - offset, bounds.size));
-        }
     }
 
     pub(super) fn set_auto_scroll(&mut self, delta: Option<Pixels>, cx: &mut Context<Self>) {
@@ -857,7 +801,9 @@ impl TextViewState {
     }
 
     pub(crate) fn has_selection(&self, cx: &App) -> bool {
-        self.has_view_selection() || self.selection_points(cx).is_some()
+        self.has_view_selection()
+            || self.selection_points(cx).is_some()
+            || self.selection_adapter.has_run_selection(cx)
     }
 
     pub(super) fn on_action_select_all(
@@ -881,38 +827,6 @@ impl TextViewState {
     pub(crate) fn is_all_selected(&self) -> bool {
         self.select_all
     }
-
-    pub(crate) fn multi_click_selection(&self) -> Option<TextViewMultiClickSelection> {
-        let scroll_offset = self.scroll_offset();
-        self.multi_click_selection.map(|selection| {
-            let pos = selection.pos + scroll_offset + self.bounds.origin;
-            let line_bounds = selection.line_bounds.map(|bounds| {
-                Bounds::new(
-                    bounds.origin + scroll_offset + self.bounds.origin,
-                    bounds.size,
-                )
-            });
-            TextViewMultiClickSelection {
-                pos,
-                line_bounds,
-                ..selection
-            }
-        })
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct TextViewMultiClickSelection {
-    pub(crate) pos: Point<Pixels>,
-    pub(crate) kind: TextViewMultiClickKind,
-    pub(crate) line_bounds: Option<Bounds<Pixels>>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TextViewMultiClickKind {
-    Word,
-    Paragraph,
-    Line,
 }
 
 impl TextViewState {

@@ -74,6 +74,9 @@ pub(super) struct TextViewSelectionAdapter {
     selection: TextSelectionHandle,
     text_bounds: Vec<Bounds<Pixels>>,
     text_runs: Vec<TextSelectionRun>,
+    /// The runs this view painted this frame, in document order, which its
+    /// selection is made against (see `text_selection::runs`).
+    view_runs: Vec<crate::text_selection::runs::TextRun>,
     /// The caret boxes at the first and last selected character painted this
     /// frame, where the touch handles go.
     selection_edges: Option<(Bounds<Pixels>, Bounds<Pixels>)>,
@@ -177,6 +180,7 @@ impl TextViewSelectionAdapter {
             selection,
             text_bounds: Vec::new(),
             text_runs: Vec::new(),
+            view_runs: Vec::new(),
             selection_edges: None,
             layout_revision: None,
         }
@@ -195,6 +199,7 @@ impl TextViewSelectionAdapter {
     pub(super) fn begin_frame(&mut self) {
         self.text_bounds.clear();
         self.text_runs.clear();
+        self.view_runs.clear();
         self.selection_edges = None;
     }
 
@@ -209,6 +214,15 @@ impl TextViewSelectionAdapter {
         self.text_runs.push(run);
     }
 
+    pub(super) fn register_view_run(&mut self, run: crate::text_selection::runs::TextRun) {
+        self.view_runs.push(run);
+    }
+
+    /// Hands this frame's runs over for [`Self::register`].
+    pub(super) fn take_view_runs(&mut self) -> Vec<crate::text_selection::runs::TextRun> {
+        std::mem::take(&mut self.view_runs)
+    }
+
     pub(super) fn register_inline(&mut self, bounds: Vec<Bounds<Pixels>>) {
         self.text_bounds.extend(bounds);
     }
@@ -221,6 +235,7 @@ impl TextViewSelectionAdapter {
         scroll_offset: Point<Pixels>,
         document_order: u64,
         self_scroll: bool,
+        view_runs: Option<Vec<crate::text_selection::runs::TextRun>>,
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -231,6 +246,10 @@ impl TextViewSelectionAdapter {
             .with_text_bounds(self.text_bounds.clone())
             .with_self_scroll(self_scroll)
             .with_rendered_element(&self.selection, window, cx);
+        let registration = match view_runs {
+            Some(view_runs) => registration.with_text_view_runs(view_runs),
+            None => registration,
+        };
         let registration = match self.selection_edges {
             Some((start, end)) => registration.with_selection_edges(start, end),
             None => registration,
@@ -279,6 +298,11 @@ impl TextViewSelectionAdapter {
 
     pub(super) fn has_selection_snapshot(&self, cx: &App) -> bool {
         self.selection.snapshot(cx).is_some()
+    }
+
+    /// Whether the window's run selection covers some of this view's text.
+    pub(super) fn has_run_selection(&self, cx: &App) -> bool {
+        self.selection.has_run_selection(cx)
     }
 
     #[cfg(test)]

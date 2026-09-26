@@ -29,6 +29,7 @@ use crate::{
         stream_fade::{StreamFadeFrame, TextLeafKey},
         text_view::{handle_link_click, is_claimed_secondary_click},
     },
+    text_selection::runs::RunSource,
     theme::ActiveTheme as _,
     v_flex,
 };
@@ -1913,6 +1914,7 @@ impl CodeBlock {
             ),
             node_cx.link_click_handler.clone(),
         )
+        .selection_key(leaf_key.map(|leaf| RunSource::Leaf(leaf, 0)))
         .range_backgrounds(node_cx.range_backgrounds(leaf_key).to_vec())
         .reveal(node_cx.reveal_at(leaf_key, 0, self.code().len()));
 
@@ -2205,6 +2207,7 @@ impl Paragraph {
                 self.inline_flow_items(fade_key, fades, backgrounds, node_cx, cx),
                 node_cx.link_click_handler.clone(),
             )
+            .leaf(fade_key)
             .default_cursor(node_cx.style.default_cursor())
             .link_secondary_click(node_cx.link_secondary_click.clone())
             .into_any_element();
@@ -2237,6 +2240,7 @@ impl Paragraph {
                 highlights,
                 node_cx.link_click_handler.clone(),
             )
+            .selection_key(fade_key.map(|leaf| RunSource::Leaf(leaf, 0)))
             .range_backgrounds(backgrounds)
             .reveal(reveal)
             .into_any_element();
@@ -2251,6 +2255,9 @@ impl Paragraph {
         // Where `text` starts in the paragraph's whole rendered text, which
         // is the byte space the fade ranges use.
         let mut consumed = 0;
+        // Which run of the paragraph's text (between its images) this is,
+        // for the window's run selection.
+        let mut ordinal = 0;
 
         for (ix, inline_node) in children.iter().enumerate() {
             let text_len = inline_node.text.len();
@@ -2271,6 +2278,7 @@ impl Paragraph {
                             ),
                             node_cx.link_click_handler.clone(),
                         )
+                        .selection_key(fade_key.map(|leaf| RunSource::Leaf(leaf, ordinal)))
                         .range_backgrounds(slice_backgrounds(
                             backgrounds,
                             consumed,
@@ -2279,6 +2287,7 @@ impl Paragraph {
                         .reveal(node_cx.reveal_at(fade_key, consumed, consumed + text.len()))
                         .into_any_element(),
                     );
+                    ordinal += 1;
                 }
                 let link_click_handler = node_cx.link_click_handler.clone();
                 let link_secondary_click = node_cx.link_secondary_click.clone();
@@ -2391,6 +2400,7 @@ impl Paragraph {
                     highlights,
                     node_cx.link_click_handler.clone(),
                 )
+                .selection_key(fade_key.map(|leaf| RunSource::Leaf(leaf, ordinal)))
                 .range_backgrounds(slice_backgrounds(backgrounds, consumed, text_end))
                 .reveal(node_cx.reveal_at(fade_key, consumed, text_end))
                 .into_any_element(),
@@ -2662,7 +2672,7 @@ fn slice_backgrounds(
     slice_ranges(backgrounds, start, end, |range, color| (range, *color))
 }
 
-const CELL_PAD_PX: f32 = 8.0; // px_2 horizontal padding, per side
+const CELL_PAD_PX: f32 = 16.0; // px_2 horizontal padding, both sides
 const CELL_MIN_PX: f32 = 48.0;
 const CELL_BORDER_PX: f32 = 1.0; // border_r_1 drawn by every column but the last
 
@@ -2683,7 +2693,7 @@ fn table_cell_insets(style: &TextViewStyle, rem_size: Pixels) -> (f32, f32) {
         .right
         .map_or(CELL_BORDER_PX, |width| f32::from(width.to_pixels(rem_size)));
     (
-        length(padding.left, CELL_PAD_PX) + length(padding.right, CELL_PAD_PX),
+        length(padding.left, CELL_PAD_PX / 2.) + length(padding.right, CELL_PAD_PX / 2.),
         border,
     )
 }

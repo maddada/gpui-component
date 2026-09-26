@@ -11,10 +11,11 @@ use gpui::{
     TextStyle, Window, div, px, size,
 };
 
-use super::{
-    InlineElement, TextViewMultiClickKind, inline::point_in_text_selection, state::LineSpan,
+use super::{InlineElement, inline::point_in_text_selection, state::LineSpan};
+use crate::{
+    GlobalState,
+    text_selection::runs::{RunKey, RunSource, RunTarget},
 };
-use crate::GlobalState;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct InlineMetrics {
@@ -156,7 +157,8 @@ pub(super) struct InlineObject {
     object: MeasuredInlineObject,
     selected: Arc<Mutex<bool>>,
     selection_bounds: Bounds<Pixels>,
-    line_bounds: Bounds<Pixels>,
+    /// The inline flow this object sits in, for a triple click's line.
+    flow: Option<usize>,
     content: AnyElement,
     content_measured: bool,
     link: Option<super::node::LinkMark>,
@@ -181,7 +183,7 @@ impl InlineObject {
         object: MeasuredInlineObject,
         selected: Arc<Mutex<bool>>,
         selection_bounds: Bounds<Pixels>,
-        line_bounds: Bounds<Pixels>,
+        flow: Option<usize>,
     ) -> Self {
         let (content, content_measured) = object.element();
         Self {
@@ -191,7 +193,7 @@ impl InlineObject {
             object,
             selected,
             selection_bounds,
-            line_bounds,
+            flow,
             content,
             content_measured,
             link: None,
@@ -300,29 +302,45 @@ impl Element for InlineObject {
         let selectable = view
             .as_ref()
             .is_some_and(|view| view.read(cx).is_selectable());
-        let selected = view.as_ref().is_some_and(|view| {
-            let state = view.read(cx);
-            if selectable && state.preserve_inline_selection && !state.is_all_selected() {
-                return self.selected.lock().is_ok_and(|selected| *selected);
-            }
-            selectable
-                && (state.is_all_selected()
-                    || state.multi_click_selection().is_some_and(|s| {
-                        s.line_bounds.map_or_else(
-                            || bounds.contains(&s.pos),
-                            |row| row.contains(&bounds.center()),
-                        )
-                    })
-                    || state.selection_points(cx).is_some_and(|(start, end)| {
-                        point_in_text_selection(
-                            self.selection_bounds.origin,
-                            self.selection_bounds.size.width,
-                            start,
-                            end,
-                            self.selection_bounds.size.height,
-                        )
-                    }))
+        let len = self.text.len();
+        let key = view.as_ref().map(|view| RunKey {
+            view: view.entity_id(),
+            source: RunSource::State(Arc::as_ptr(&self.selected) as usize),
         });
+        // An object is one indivisible piece of the window's run selection
+        // (see `text_selection::runs`).
+        let selected = match (&view, key) {
+            (Some(view), Some(key)) if selectable => {
+                let state = view.read(cx);
+                state.is_all_selected()
+                    || crate::TextSelection::run_range(
+                        key,
+                        &(0..len),
+                        &self.text,
+                        true,
+                        len,
+                        window,
+                        cx,
+                    )
+                    .is_some()
+                    || if state.preserve_inline_selection {
+                        self.selected.lock().is_ok_and(|selected| *selected)
+                    } else {
+                        // A geometric selection made through another
+                        // participant (see `Inline::band_selection`).
+                        state.selection_points(cx).is_some_and(|(start, end)| {
+                            point_in_text_selection(
+                                self.selection_bounds.origin,
+                                self.selection_bounds.size.width,
+                                start,
+                                end,
+                                self.selection_bounds.size.height,
+                            )
+                        })
+                    }
+            }
+            _ => false,
+        };
         if let Ok(mut value) = self.selected.lock() {
             *value = selected;
         }
@@ -396,39 +414,24 @@ impl Element for InlineObject {
                     state.selection_adapter.register_inline(vec![visible]);
                 });
             }
-            let hitbox = hitbox.clone();
-            let selected_state = self.selected.clone();
-            let text = self.text.to_string();
-            let current_view = window.current_view();
-            let line_bounds = self.line_bounds;
-            window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-                if !phase.bubble()
-                    || !hitbox.is_hovered(window)
-                    || event.button != MouseButton::Left
-                    || !(2..=3).contains(&event.click_count)
-                {
-                    return;
-                }
-                GlobalState::suppress_text_selection(cx);
-                if let Ok(mut value) = selected_state.lock() {
-                    *value = true;
-                }
-                if let Some(view) = &view {
-                    view.update(cx, |state, cx| {
-                        if event.click_count == 3 {
-                            state.set_multi_click_line(line_bounds, cx);
-                        } else {
-                            state.set_multi_click_selection(
-                                event.position,
-                                TextViewMultiClickKind::Word,
-                                text.clone(),
-                                cx,
-                            );
-                        }
-                    });
-                }
-                cx.notify(current_view);
-            });
+            if let (Some(view), Some(key)) = (&view, key) {
+                let run = crate::text_selection::runs::TextRun {
+                    key,
+                    view: view.downgrade(),
+                    source_range: 0..len,
+                    atomic: true,
+                    text: self.text.clone(),
+                    geometry: None,
+                    hitbox: hitbox.clone(),
+                    visible,
+                    target: RunTarget::Object(self.selected.clone()),
+                    source_text: self.text.clone(),
+                    flow: self.flow,
+                };
+                view.update(cx, |state, _| {
+                    state.selection_adapter.register_view_run(run)
+                });
+            }
         }
         self.content.paint(window, cx);
     }
@@ -501,7 +504,7 @@ mod tests {
                 measured,
                 Arc::default(),
                 Bounds::default(),
-                Bounds::default(),
+                None,
             );
             let mut accessible = gpui::accesskit::Node::new(Role::Unknown);
             object.write_a11y_info(&mut accessible);

@@ -4,8 +4,8 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, Bounds, ClickEvent, ContentMask, Element, ElementId, Entity, Global,
     GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, InteractiveElement, IntoElement,
-    LayoutId, MouseButton, ParentElement, Pixels, Refineable as _, SharedString, StyleRefinement,
-    Styled, Window, div, point, px,
+    LayoutId, MouseButton, MouseDownEvent, ParentElement, Pixels, Refineable as _, SharedString,
+    StyleRefinement, Styled, Window, div, point, px,
 };
 
 use crate::StyledExt;
@@ -872,6 +872,33 @@ impl Element for TextView {
         let state = &request_layout.state;
         if self.selectable {
             state.update(cx, |state, _| state.selection_adapter.begin_frame());
+            // CDXC:SessionChat 2026-09-19 WHY:
+            // The window selection layer only sees a press that bubbles all the way to the root, and hosts routinely stop mouse-down propagation on a pane to claim focus (Ghostex's companion pane and subagent card do), which made every TextView inside such a pane unselectable. A press on the view therefore starts the selection here, before its children paint (so a control inside it answers first) and below any host container; the layer still owns blank-space presses, the drag, and the release.
+            window.on_mouse_event({
+                let hitbox = prepaint.hitbox.clone();
+                move |event: &MouseDownEvent, phase, window, cx| {
+                    if !phase.bubble()
+                        || event.button != MouseButton::Left
+                        || !hitbox.is_hovered(window)
+                    {
+                        return;
+                    }
+                    // A finger selects read-only text with a long press only;
+                    // a double tap selects nothing here. The handles and the
+                    // menu on a double tap belong to `Input`.
+                    if event.click_count >= 2 && GlobalState::is_touch_press(cx) {
+                        GlobalState::suppress_text_selection(cx);
+                        return;
+                    }
+                    TextSelection::begin_text_view_press(
+                        event.position,
+                        event.click_count,
+                        event.modifiers.shift,
+                        window,
+                        cx,
+                    );
+                }
+            });
         }
 
         GlobalState::global_mut(cx)
@@ -911,6 +938,11 @@ impl Element for TextView {
         }
 
         if self.selectable {
+            // A scrollable view virtualizes its blocks, so its painted runs are
+            // not its document: it keeps the geometric selection, which knows
+            // the blocks scrolled past (see `text_selection::runs`).
+            let view_runs = state.update(cx, |state, _| state.selection_adapter.take_view_runs());
+            let view_runs = (!self.scrollable).then_some(view_runs);
             let (adapter, scroll_offset, content_bounds, self_scroll, handle_color) = {
                 let state = state.read(cx);
                 (
@@ -928,6 +960,7 @@ impl Element for TextView {
                 scroll_offset,
                 document_order,
                 self_scroll,
+                view_runs,
                 window,
                 cx,
             );
@@ -1577,6 +1610,8 @@ mod tests {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
             div()
                 .w(px(160.))
+                // Multi-click selection is the window's, as in any `Root`.
+                .child(crate::TextSelectionLayer)
                 .child(
                     div()
                         .h(px(24.))
@@ -2092,10 +2127,10 @@ mod tests {
                     .child(
                         div()
                             .debug_selector(|| "default-h1".into())
-                            .child(TextView::markdown("default-h1-view", "# Heading")),
+                            .child(TextView::markdown("default-h1-view", "# Heading\n\nText")),
                     )
                     .child(div().debug_selector(|| "custom-h1".into()).child(
-                        TextView::markdown("custom-heading-view", "# Heading").style(
+                        TextView::markdown("custom-heading-view", "# Heading\n\nText").style(
                             TextViewStyle::default().with_heading(|level| {
                                 if level == 1 {
                                     StyleRefinement::default().pb(rems(2.))
@@ -2108,10 +2143,10 @@ mod tests {
                     .child(
                         div()
                             .debug_selector(|| "default-h2".into())
-                            .child(TextView::markdown("default-h2-view", "## Heading")),
+                            .child(TextView::markdown("default-h2-view", "## Heading\n\nText")),
                     )
                     .child(div().debug_selector(|| "custom-h2".into()).child(
-                        TextView::markdown("custom-h2-view", "## Heading").style(
+                        TextView::markdown("custom-h2-view", "## Heading\n\nText").style(
                             TextViewStyle::default().with_heading(|level| {
                                 if level == 1 {
                                     StyleRefinement::default().pb(rems(2.))
@@ -2387,7 +2422,7 @@ mod tests {
         let nested_starts_at_four = "1. outer\n\n   4. nested\n   5. again";
         assert_eq!(
             shaped_markers(Format::Markdown, nested_starts_at_four),
-            ["1. ", "D. ", "E. "]
+            ["1. ", "d. ", "e. "]
         );
 
         let nested_starts_at_zero = "1. outer\n\n   0. zero";

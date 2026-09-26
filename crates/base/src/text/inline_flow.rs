@@ -19,6 +19,8 @@ use crate::text::text_view::{
     LinkClickHandlerFn, LinkSecondaryClickFn, handle_link_click, is_claimed_secondary_click,
 };
 
+use crate::text_selection::runs::RunSource;
+
 use super::{
     inline::{Inline, InlineHighlight, InlineState, text_runs},
     inline_object::{InlineObject, MeasuredInlineObject},
@@ -39,6 +41,9 @@ pub(super) struct InlineFlow {
     default_cursor: bool,
     /// [`TextView::on_link_secondary_click`](super::TextView::on_link_secondary_click).
     link_secondary_click: Option<Arc<LinkSecondaryClickFn>>,
+    /// The text leaf this flow lays out, which names its runs in the window's
+    /// run selection across re-parses.
+    leaf: Option<super::TextLeafKey>,
 }
 
 pub(super) type InlineRenderer = dyn Fn(&super::InlineRenderContext, &mut Window, &mut App) -> Option<super::InlineElement>
@@ -303,7 +308,14 @@ impl InlineFlow {
             link_click_handler,
             default_cursor: false,
             link_secondary_click: None,
+            leaf: None,
         }
+    }
+
+    /// See [`Self::leaf`](InlineFlow::leaf).
+    pub(super) fn leaf(mut self, leaf: Option<super::TextLeafKey>) -> Self {
+        self.leaf = leaf;
+        self
     }
 
     /// A secondary (right) press on a linked image; see
@@ -548,6 +560,30 @@ impl Element for InlineFlow {
         let link_tooltip = cx
             .try_global::<super::TextViewDefaults>()
             .and_then(|defaults| defaults.link_tooltip.clone());
+        // One flow is one paragraph, which a triple click selects whole.
+        let flow_id = Rc::as_ptr(&frame_state) as *const () as usize;
+        // Each distinct source text of the paragraph (the runs between its
+        // images and inline objects), numbered in order: with the leaf, the
+        // name its fragments share in the window's run selection.
+        let mut ordinals: Vec<usize> = Vec::new();
+        let source_keys = self
+            .items
+            .iter()
+            .map(|item| match item {
+                InlineFlowItem::Text { state, .. } => {
+                    let ptr = Arc::as_ptr(state) as usize;
+                    let ordinal = ordinals
+                        .iter()
+                        .position(|seen| *seen == ptr)
+                        .unwrap_or_else(|| {
+                            ordinals.push(ptr);
+                            ordinals.len() - 1
+                        });
+                    self.leaf.map(|leaf| RunSource::Leaf(leaf, ordinal))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         let mut text_fragment_count = 0;
         for (fragment_ix, fragment) in layout.fragments.iter().enumerate() {
             match fragment {
@@ -579,10 +615,7 @@ impl Element for InlineFlow {
                             bounds.origin + selection_bounds.origin,
                             selection_bounds.size,
                         ),
-                        Bounds::new(
-                            point(bounds.left(), bounds.top() + selection_bounds.top()),
-                            size(bounds.size.width, selection_bounds.size.height),
-                        ),
+                        Some(flow_id),
                     )
                     .link(link.clone(), self.link_click_handler.clone())
                     .into_any_element();
@@ -697,6 +730,8 @@ impl Element for InlineFlow {
                     )
                     .selection_source(source_state.clone(), selection_range)
                     .atomic_selection(atomic)
+                    .selection_key(source_keys[*item_ix])
+                    .flow(flow_id)
                     .range_backgrounds(slice_ranges(
                         backgrounds,
                         source_range.start,
@@ -2010,6 +2045,7 @@ mod tests {
                         text: "中文 ".into(),
                         links: vec![],
                         highlights: vec![],
+                        reference: None,
                     },
                     MeasureItem::Object {
                         text: "x²".into(),
@@ -2027,6 +2063,7 @@ mod tests {
                         text: " English".into(),
                         links: vec![],
                         highlights: vec![],
+                        reference: None,
                     },
                 ];
                 for width in [1., 30., 80., 500.] {
@@ -2108,12 +2145,14 @@ mod tests {
             style: HighlightStyle::default(),
             font_family: Some(SharedString::from(MONO)),
             font_size_scale: None,
+            chip: None,
         };
         let items = vec![
             MeasureItem::Text {
                 text: lead.clone(),
                 links: vec![],
                 highlights: vec![],
+                reference: None,
             },
             MeasureItem::Image {
                 source: SharedUri::from("https://example.com/badge.png").into(),
@@ -2124,6 +2163,7 @@ mod tests {
                 text: SharedString::from(tail_text),
                 links: vec![],
                 highlights: vec![(code_range.clone(), code_highlight)],
+                reference: None,
             },
         ];
         let image_size = size(px(10.), px(10.));
@@ -2222,6 +2262,7 @@ mod tests {
                             ..Default::default()
                         },
                     )],
+                    reference: None,
                 },
             ];
             let image_sizes = vec![Some(size(px(10.), px(10.))), None];
@@ -2262,9 +2303,11 @@ mod tests {
                 InlineHighlight {
                     font_family: Some(MONO.into()),
                     font_size_scale: Some(0.875),
+                    chip: None,
                     ..Default::default()
                 },
             )],
+            reference: None,
         }];
         // The 40px glyphs are taller than the 30px line. A plain text line
         // keeps the line height and lets them overflow, so a line with
@@ -2298,9 +2341,11 @@ mod tests {
                     InlineHighlight {
                         font_family: Some(MONO.into()),
                         font_size_scale: Some(0.875),
+                        chip: None,
                         ..Default::default()
                     },
                 )],
+                reference: None,
             }];
             window.update(|_, window, cx| {
                 let layout = layout_flow(&items, &[None], &style, None, window, cx);
@@ -2359,6 +2404,7 @@ mod tests {
                                     InlineHighlight {
                                         font_family: Some(MONO.into()),
                                         font_size_scale: Some(0.875),
+                                        chip: None,
                                         ..Default::default()
                                     },
                                 )],

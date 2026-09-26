@@ -9,22 +9,20 @@ use std::{
 };
 
 use gpui::{
-    App, BorderStyle, Bounds, ClickEvent, CursorStyle, Edges, Element, ElementId, GlobalElementId,
-    Half, HighlightStyle, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
+    App, BorderStyle, Bounds, ClickEvent, CursorStyle, Element, ElementId, GlobalElementId, Half,
+    HighlightStyle, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
     MouseButton, MouseClickEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    SharedString, StyledText, TextAlign, TextLayout, TextRun, TextStyle, Window, point, px, quad,
-    size,
+    SharedString, StyledText, TextAlign, TextLayout, TextRun, TextStyle, Window, point, px, size,
 };
 
 use crate::{
     GlobalState, TextSelection,
     input::Selection,
-    text::TextViewMultiClickKind,
     text::node::LinkMark,
     text::range_highlight::RevealAt,
-    text::selection::word_range_at,
     text::state::LineSpan,
     text::text_view::{LinkClickHandlerFn, handle_link_click, is_claimed_secondary_click},
+    text_selection::runs::{RunKey, RunSource, RunTarget},
 };
 
 /// The style applied to one range of inline text.
@@ -224,6 +222,10 @@ pub(super) struct Inline {
     /// The text stands for its whole `selection_source` range rather than
     /// byte for byte: a reference chip's label for its link's text.
     atomic_selection: bool,
+    /// See [`Self::selection_key`].
+    selection_key: Option<RunSource>,
+    /// See [`Self::flow`].
+    flow: Option<usize>,
     /// Range highlight backgrounds, painted behind the text.
     range_backgrounds: Vec<(Range<usize>, Hsla)>,
     /// The start of a pending reveal, when it is in this text.
@@ -245,8 +247,8 @@ pub(crate) struct InlineState {
     /// Index of the link under the pointer as of the last mouse move.
     hovered_index: Option<usize>,
     /// The text that actually rendering, matched with selection.
-    pub(super) text: SharedString,
-    pub(super) selection: Option<Selection>,
+    pub(crate) text: SharedString,
+    pub(crate) selection: Option<Selection>,
 }
 
 /// One frame's [`StyledText`], kept for the next frame's [`Inline`] of the
@@ -390,6 +392,8 @@ impl Inline {
             selection_bounds: None,
             selection_source: None,
             atomic_selection: false,
+            selection_key: None,
+            flow: None,
             range_backgrounds: Vec::new(),
             reveal: None,
             link_click_handler,
@@ -423,6 +427,164 @@ impl Inline {
     ) -> Self {
         self.selection_source = Some((state, range));
         self
+    }
+
+    /// Name this run's source text for the window's run selection (see
+    /// `text_selection::runs`): the text leaf it belongs to and which run of
+    /// the leaf it is, which a re-parse of the same content keeps.
+    pub(super) fn selection_key(mut self, key: Option<RunSource>) -> Self {
+        self.selection_key = key;
+        self
+    }
+
+    /// Mark this run as one fragment of the paragraph `flow` identifies. A
+    /// flow paints a paragraph as one run per wrapped line, and a triple click
+    /// selects the whole paragraph only if it can find the neighbouring
+    /// fragments that belong to it.
+    pub(super) fn flow(mut self, flow: usize) -> Self {
+        self.flow = Some(flow);
+        self
+    }
+
+    /// This run's identity in the window's run selection: its key, where its
+    /// text sits in its source text, that source text, and where a selection
+    /// of it is written for copy.
+    fn run_identity(
+        &self,
+        view: &gpui::Entity<super::TextViewState>,
+    ) -> (RunKey, Range<usize>, SharedString, RunTarget) {
+        let (source, range) = match &self.selection_source {
+            Some((source, range)) => (source.clone(), range.clone()),
+            None => (self.state.clone(), 0..self.text.len()),
+        };
+        let source_text = if Arc::ptr_eq(&source, &self.state) {
+            self.text.clone()
+        } else {
+            source
+                .lock()
+                .map(|state| state.text.clone())
+                .unwrap_or_default()
+        };
+        let key = RunKey {
+            view: view.entity_id(),
+            source: self
+                .selection_key
+                .unwrap_or(RunSource::State(Arc::as_ptr(&source) as usize)),
+        };
+        (key, range, source_text, RunTarget::Text(source))
+    }
+
+    /// The selection kept in the source state across a requested resource
+    /// reflow (`TextViewState::invalidate_inline_layout`).
+    fn preserved_selection(&self) -> Option<Range<usize>> {
+        let len = self.text.len();
+        match &self.selection_source {
+            Some((source, range)) => source
+                .lock()
+                .ok()
+                .and_then(|state| state.selection)
+                .and_then(|selection| {
+                    let start = selection.start.max(range.start);
+                    let end = selection.end.min(range.end);
+                    (start < end).then(|| {
+                        if self.atomic_selection {
+                            0..len
+                        } else {
+                            start - range.start..end - range.start
+                        }
+                    })
+                }),
+            None => self
+                .state
+                .lock()
+                .ok()
+                .and_then(|state| state.selection)
+                .map(|selection| selection.start..selection.end),
+        }
+    }
+
+    /// The part of this run inside a geometric window selection: the band
+    /// between the two window points of a selection made through a
+    /// participant that is not a fit-content `TextView` (a scrollable,
+    /// virtualized `TextView`, or plain selectable text a drag started on),
+    /// which reaches this view as a snapshot. A `TextView` selection proper is
+    /// made against the run registry instead (see `text_selection::runs`).
+    fn band_selection(
+        &self,
+        view_state: &super::TextViewState,
+        text_layout: &TextLayout,
+        window: &Window,
+        cx: &App,
+    ) -> Option<Range<usize>> {
+        let (selection_start, selection_end) = view_state.selection_points(cx)?;
+        let line_height = window.line_height();
+
+        // The selection is computed purely from the geometric band, NOT from
+        // what is currently visible: every glyph of a *painted* element is
+        // laid out even when it is scrolled out of, or clipped by, an
+        // ancestor's viewport, and the copied text is derived from
+        // `InlineState.selection`, so a selection taller than the viewport
+        // still copies what is off screen.
+        let mut selection: Option<Range<usize>> = None;
+        let mut offset = 0;
+        for c in self.text.chars() {
+            let next_offset = offset + c.len_utf8();
+            let Some(pos) = text_layout.position_for_index(offset) else {
+                offset = next_offset;
+                continue;
+            };
+            let mut char_width = line_height.half();
+            if let Some(next_pos) = text_layout.position_for_index(next_offset)
+                && next_pos.y == pos.y
+            {
+                char_width = next_pos.x - pos.x;
+            }
+            let selection_pos = self
+                .selection_bounds
+                .map_or(pos, |bounds| point(pos.x, bounds.top()));
+            let selection_height = self
+                .selection_bounds
+                .map_or(line_height, |bounds| bounds.size.height);
+            if point_in_text_selection(
+                selection_pos,
+                char_width,
+                selection_start,
+                selection_end,
+                selection_height,
+            ) {
+                selection.get_or_insert(offset..offset).end = next_offset;
+            }
+            offset = next_offset;
+        }
+        selection
+    }
+
+    /// Paints the selection wash behind `range`, one box per laid-out row,
+    /// from the first selected glyph to the last one on it: a soft-wrap
+    /// boundary belongs to both rows it joins, so rows tile without gaps.
+    fn paint_selection_wash(
+        &self,
+        range: &Range<usize>,
+        text_layout: &TextLayout,
+        window: &mut Window,
+        color: Hsla,
+    ) {
+        let glyphs = glyph_boxes(
+            text_layout,
+            window.text_style().text_align,
+            text_layout.bounds().size.width,
+        );
+        let origin = text_layout.bounds().origin;
+        let line_height = text_layout.line_height();
+        for (row, left, right) in range_boxes(&glyphs, range.clone()) {
+            window.paint_quad(gpui::fill(
+                Bounds::from_corners(
+                    point(origin.x + left, origin.y + line_height * row as f32),
+                    point(origin.x + right, origin.y + line_height * (row + 1) as f32),
+                ),
+                color,
+            ));
+        }
     }
 
     /// Map any selection of this text onto its whole `selection_source`
@@ -533,149 +695,6 @@ impl Inline {
         });
     }
 
-    fn layout_selections(
-        &self,
-        text_layout: &TextLayout,
-        bounds: &Bounds<Pixels>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (bool, bool, Option<Selection>) {
-        let Some(text_view_state) = GlobalState::global(cx).text_view_state() else {
-            return (false, false, None);
-        };
-
-        let text_view_state = text_view_state.read(cx);
-        let is_selectable = text_view_state.is_selectable();
-        if !is_selectable {
-            return (false, false, None);
-        }
-
-        if text_view_state.is_all_selected() {
-            return (is_selectable, true, Some((0..self.text.len()).into()));
-        }
-
-        if text_view_state.preserve_inline_selection {
-            let atomic = self.atomic_selection;
-            let len = self.text.len();
-            let selection = if let Some((source, range)) = &self.selection_source {
-                source
-                    .lock()
-                    .ok()
-                    .and_then(|state| state.selection)
-                    .and_then(|selection| {
-                        let start = selection.start.max(range.start);
-                        let end = selection.end.min(range.end);
-                        (start < end).then(|| {
-                            if atomic {
-                                Selection::new(0, len)
-                            } else {
-                                Selection::new(start - range.start, end - range.start)
-                            }
-                        })
-                    })
-            } else {
-                self.state.lock().ok().and_then(|state| state.selection)
-            };
-            return (true, selection.is_some(), selection);
-        }
-
-        if let Some(selection) = text_view_state.multi_click_selection() {
-            if selection.kind == TextViewMultiClickKind::Line {
-                return (
-                    true,
-                    true,
-                    selection
-                        .line_bounds
-                        .filter(|row| row.contains(&bounds.center()))
-                        .map(|_| Selection::new(0, self.text.len())),
-                );
-            }
-            return (
-                is_selectable,
-                true,
-                selection_for_multi_click(
-                    &self.text,
-                    text_layout,
-                    *bounds,
-                    selection.pos,
-                    selection.kind,
-                )
-                .map(Selection::from),
-            );
-        }
-
-        let Some((selection_start, selection_end)) = text_view_state.selection_points(cx) else {
-            return (is_selectable, false, None);
-        };
-        let line_height = window.line_height();
-
-        // Use for debug selection bounds
-        // self.paint_selected_bounds(Bounds::from_corners(selection_start, selection_end), window, cx);
-
-        // NOTE: the selection is computed purely from the geometric band
-        // (`selection_start`..`selection_end`), NOT from what is currently
-        // visible. Every glyph of a *painted* element is laid out (its
-        // `position_for_index` is valid) even when it is scrolled out of, or
-        // clipped by, an ancestor's viewport — the content mask only clips the
-        // painted pixels. Because the copied text is derived from
-        // `InlineState.selection`, gating the selection on `content_mask` here
-        // used to drop scrolled-out-but-selected glyphs, so a selection taller
-        // than the viewport (e.g. a long chat message, or a drag with
-        // auto-scroll) copied only the portion that happened to be on screen.
-        //
-        // This does not resurrect the #2156 clipped-hit-testing behavior: a
-        // selection can only START on visible text (window selection resolves
-        // endpoints with hitbox hover testing against visible Inline bounds),
-        // so the band's endpoints are always anchored to on-screen text.
-        // Content that is merely `overflow_hidden`
-        // (not scrolled) lies outside that band and is still excluded, while
-        // the highlight quads painted for off-screen glyphs are clipped away by
-        // GPUI's content mask as before.
-        let mut selection: Option<Selection> = None;
-        let mut offset = 0;
-        let mut chars = self.text.chars().peekable();
-        while let Some(c) = chars.next() {
-            let Some(pos) = text_layout.position_for_index(offset) else {
-                offset += c.len_utf8();
-                continue;
-            };
-
-            let next_offset = offset + c.len_utf8();
-            let mut char_width = line_height.half();
-            if let Some(next_pos) = text_layout.position_for_index(next_offset) {
-                if next_pos.y == pos.y {
-                    char_width = next_pos.x - pos.x;
-                }
-            }
-
-            let selection_pos = self
-                .selection_bounds
-                .map_or(pos, |bounds| point(pos.x, bounds.top()));
-            let selection_height = self
-                .selection_bounds
-                .map_or(line_height, |bounds| bounds.size.height);
-            if point_in_text_selection(
-                selection_pos,
-                char_width,
-                selection_start,
-                selection_end,
-                selection_height,
-            ) {
-                if selection.is_none() {
-                    selection = Some((offset..offset).into());
-                }
-
-                if let Some(selection) = selection.as_mut() {
-                    selection.end = next_offset;
-                }
-            }
-
-            offset = next_offset;
-        }
-
-        (true, true, selection)
-    }
-
     /// One box per laid-out row, from the row's start to its last character,
     /// clipped to `mask_bounds`.
     ///
@@ -750,80 +769,6 @@ impl Inline {
                 line_height,
             ),
         ))
-    }
-
-    /// Paint the selection background.
-    fn paint_selection(
-        selection: &Selection,
-        text_layout: &TextLayout,
-        bounds: &Bounds<Pixels>,
-        window: &mut Window,
-        color: gpui::Hsla,
-    ) {
-        let mut start = selection.start;
-        let mut end = selection.end;
-        if end < start {
-            std::mem::swap(&mut start, &mut end);
-        }
-        let Some(start_position) = text_layout.position_for_index(start) else {
-            return;
-        };
-        let Some(end_position) = text_layout.position_for_index(end) else {
-            return;
-        };
-
-        let line_height = text_layout.line_height();
-        if start_position.y == end_position.y {
-            window.paint_quad(quad(
-                Bounds::from_corners(
-                    start_position,
-                    point(end_position.x, end_position.y + line_height),
-                ),
-                px(0.),
-                color,
-                Edges::default(),
-                gpui::transparent_black(),
-                BorderStyle::default(),
-            ));
-        } else {
-            window.paint_quad(quad(
-                Bounds::from_corners(
-                    start_position,
-                    point(bounds.right(), start_position.y + line_height),
-                ),
-                px(0.),
-                color,
-                Edges::default(),
-                gpui::transparent_black(),
-                BorderStyle::default(),
-            ));
-
-            if end_position.y > start_position.y + line_height {
-                window.paint_quad(quad(
-                    Bounds::from_corners(
-                        point(bounds.left(), start_position.y + line_height),
-                        point(bounds.right(), end_position.y),
-                    ),
-                    px(0.),
-                    color,
-                    Edges::default(),
-                    gpui::transparent_black(),
-                    BorderStyle::default(),
-                ));
-            }
-
-            window.paint_quad(quad(
-                Bounds::from_corners(
-                    point(bounds.left(), end_position.y),
-                    point(end_position.x, end_position.y + line_height),
-                ),
-                px(0.),
-                color,
-                Edges::default(),
-                gpui::transparent_black(),
-                BorderStyle::default(),
-            ));
-        }
     }
 
     /// Paint each range highlight behind the text of its range.
@@ -960,20 +905,62 @@ impl Element for Inline {
         if !self.range_backgrounds.is_empty() {
             self.paint_range_highlights(&text_layout, window);
         }
+
+        // The selected part of this run, from the window's run selection
+        // (see `text_selection::runs`), before the text so the wash sits
+        // under the glyphs and selected text stays crisp.
+        let text_view_state = GlobalState::global(cx).text_view_state().cloned();
+        let run = text_view_state
+            .as_ref()
+            .filter(|view| view.read(cx).is_selectable())
+            .map(|view| self.run_identity(view));
+        let (is_selectable, selection) = match (&text_view_state, &run) {
+            (Some(view), Some((key, source_range, source_text, _))) => {
+                let view_state = view.read(cx);
+                let len = self.text.len();
+                let selection = if view_state.is_all_selected() {
+                    Some(0..len)
+                } else {
+                    TextSelection::run_range(
+                        *key,
+                        source_range,
+                        source_text,
+                        self.atomic_selection,
+                        len,
+                        window,
+                        cx,
+                    )
+                    .or_else(|| {
+                        if view_state.preserve_inline_selection {
+                            self.preserved_selection()
+                        } else {
+                            self.band_selection(view_state, &text_layout, window, cx)
+                        }
+                    })
+                };
+                (true, selection.filter(|range| !range.is_empty()))
+            }
+            _ => (false, None),
+        };
+        let is_selection = selection.is_some();
+        if let Some(range) = &selection {
+            let color = text_view_state
+                .as_ref()
+                .map(|state| state.read(cx).text_view_style.selection())
+                .unwrap_or_else(|| crate::Theme::global(cx).tokens.colors.selection);
+            self.paint_selection_wash(range, &text_layout, window, color);
+        }
+
         self.styled_text
             .paint(global_id, None, bounds, &mut (), &mut (), window, cx);
-
-        // layout selections
-        let (is_selectable, is_selection, selection) =
-            self.layout_selections(&text_layout, &bounds, window, cx);
 
         let Ok(mut state) = self.state.lock() else {
             return;
         };
 
-        state.selection = selection;
+        state.selection = selection.clone().map(Selection::from);
         if let Some((source, range)) = &self.selection_source
-            && let Some(selection) = selection
+            && let Some(selection) = &selection
             && let Ok(mut source) = source.lock()
         {
             let (start, end) = if self.atomic_selection {
@@ -990,8 +977,8 @@ impl Element for Inline {
         // `TextViewStyle::with_default_cursor`: the host wants the arrow left
         // alone over this document, so neither the selection I-beam nor the
         // link hand is asked for. Selection and links work as before.
-        let default_cursor = GlobalState::global(cx)
-            .text_view_state()
+        let default_cursor = text_view_state
+            .as_ref()
             .is_some_and(|state| state.read(cx).text_view_style.default_cursor());
         if !default_cursor {
             if is_selection || is_selectable {
@@ -1005,114 +992,46 @@ impl Element for Inline {
             }
         }
 
-        if let Some(selection) = &state.selection {
-            let color = GlobalState::global(cx)
-                .text_view_state()
-                .map(|state| state.read(cx).text_view_style.selection())
-                .unwrap_or_else(|| crate::Theme::global(cx).tokens.colors.selection);
-            Self::paint_selection(selection, &text_layout, &bounds, window, color);
-            if let Some((start, end)) = Self::selection_edges(selection, &text_layout)
-                && let Some(text_view_state) = GlobalState::global(cx).text_view_state().cloned()
-            {
-                text_view_state.update(cx, |state, _| {
+        let edges = state
+            .selection
+            .as_ref()
+            .and_then(|selection| Self::selection_edges(selection, &text_layout));
+
+        if let (Some(view), Some((key, source_range, source_text, target))) =
+            (&text_view_state, run)
+        {
+            let text_bounds = Self::text_line_bounds(
+                &text_layout,
+                text_layout.line_height(),
+                window.content_mask().bounds,
+            );
+            let visible = hitbox.bounds.intersect(&window.content_mask().bounds);
+            let view_run = crate::text_selection::runs::TextRun {
+                key,
+                view: view.downgrade(),
+                source_range,
+                atomic: self.atomic_selection,
+                text: self.text.clone(),
+                geometry: Some(crate::text_selection::runs::RunGeometry::new(&text_layout)),
+                hitbox: hitbox.clone(),
+                visible,
+                target,
+                source_text,
+                flow: self.flow,
+            };
+            view.update(cx, |state, _| {
+                if let Some((start, end)) = edges {
                     state.selection_adapter.register_selection_edges(start, end);
-                });
-            }
-        }
-
-        if is_selectable {
-            if let Some(text_view_state) = GlobalState::global(cx).text_view_state().cloned() {
-                let text_bounds = Self::text_line_bounds(
-                    &text_layout,
-                    text_layout.line_height(),
-                    window.content_mask().bounds,
-                );
-                text_view_state.update(cx, |state, _| {
-                    state.selection_adapter.register_inline(text_bounds);
-                    state
-                        .selection_adapter
-                        .register_text_run(crate::TextSelectionRun::new(
-                            self.text.clone(),
-                            text_layout.clone(),
-                            hitbox.bounds,
-                        ));
-                });
-            }
-
-            window.on_mouse_event({
-                let hitbox = hitbox.clone();
-                let text_layout = text_layout.clone();
-                let inline_state = self.state.clone();
-                let text = self.text.clone();
-                let text_view_state = GlobalState::global(cx).text_view_state().cloned();
-                let line_bounds = self.selection_bounds;
-                move |event: &MouseDownEvent, phase, window, cx| {
-                    if !phase.bubble()
-                        || !hitbox.is_hovered(window)
-                        || event.button != MouseButton::Left
-                    {
-                        return;
-                    }
-
-                    if event.click_count == 3
-                        && let Some(line_bounds) = line_bounds
-                    {
-                        GlobalState::suppress_text_selection(cx);
-                        if let Some(view) = &text_view_state {
-                            view.update(cx, |state, cx| {
-                                state.set_multi_click_line(line_bounds, cx)
-                            });
-                        }
-                        cx.notify(current_view);
-                        return;
-                    }
-
-                    // A finger selects read-only text with a long press only;
-                    // a double tap selects nothing here, neither the mouse's
-                    // plain word nor the window layer's touch selection. The
-                    // handles and the menu on a double tap belong to `Input`.
-                    if event.click_count == 2 && GlobalState::is_touch_press(cx) {
-                        GlobalState::suppress_text_selection(cx);
-                        return;
-                    }
-
-                    let kind = match event.click_count {
-                        2 => TextViewMultiClickKind::Word,
-                        3 => TextViewMultiClickKind::Paragraph,
-                        _ => return,
-                    };
-
-                    let Some(range) = selection_for_multi_click(
-                        &text,
-                        &text_layout,
-                        hitbox.bounds,
-                        event.position,
-                        kind,
-                    ) else {
-                        return;
-                    };
-
-                    let selected_text = text[range.clone()].to_string();
-
-                    // This renderer owns multi-click selection. Prevent the
-                    // window selection layer from handling the same press.
-                    GlobalState::suppress_text_selection(cx);
-
-                    if let Ok(mut inline_state) = inline_state.lock() {
-                        inline_state.selection = Some(range.into());
-                    }
-                    if let Some(text_view_state) = &text_view_state {
-                        text_view_state.update(cx, |state, cx| {
-                            state.set_multi_click_selection(
-                                event.position,
-                                kind,
-                                selected_text,
-                                cx,
-                            );
-                        });
-                    }
-                    cx.notify(current_view);
                 }
+                state.selection_adapter.register_inline(text_bounds);
+                state
+                    .selection_adapter
+                    .register_text_run(crate::TextSelectionRun::new(
+                        self.text.clone(),
+                        text_layout.clone(),
+                        hitbox.bounds,
+                    ));
+                state.selection_adapter.register_view_run(view_run);
             });
         }
 
@@ -1354,30 +1273,6 @@ fn range_boxes(glyphs: &[GlyphBox], range: Range<usize>) -> Vec<(usize, Pixels, 
     boxes
 }
 
-fn selection_for_multi_click(
-    text: &str,
-    text_layout: &TextLayout,
-    bounds: Bounds<Pixels>,
-    pos: Point<Pixels>,
-    kind: TextViewMultiClickKind,
-) -> Option<std::ops::Range<usize>> {
-    if !bounds.contains(&pos) {
-        return None;
-    }
-
-    let offset = text_layout.index_for_position(pos).ok()?;
-
-    match kind {
-        TextViewMultiClickKind::Word => word_range_at(text, offset),
-        // Known limitation: a paragraph maps to a single Inline run here. When a
-        // paragraph embeds an inline image it is split into multiple Inline runs,
-        // so triple-click only selects the run on the clicked side of the image.
-        TextViewMultiClickKind::Paragraph | TextViewMultiClickKind::Line => {
-            (!text.is_empty()).then_some(0..text.len())
-        }
-    }
-}
-
 /// Check if a `pos` is within a `bounds`, considering multi-line selections.
 pub(super) fn point_in_text_selection(
     pos: Point<Pixels>,
@@ -1409,15 +1304,12 @@ pub(super) fn point_in_text_selection(
     } else {
         (selection_end, selection_start)
     };
-    let is_top_line = point_in_line(top_point);
-    let is_bottom_line = point_in_line(bottom_point);
-
-    if is_top_line {
-        return x >= top_point.x;
-    } else if is_bottom_line {
-        return x <= bottom_point.x;
+    if point_in_line(top_point) {
+        x >= top_point.x
+    } else if point_in_line(bottom_point) {
+        x <= bottom_point.x
     } else {
-        return true;
+        true
     }
 }
 
@@ -1962,6 +1854,7 @@ mod tests {
             style,
             font_family: Some(SharedString::from("Mono")),
             font_size_scale: None,
+            chip: None,
         }
     }
 
@@ -2207,7 +2100,6 @@ mod tests {
             line_height
         ));
     }
-
     #[test]
     fn test_point_in_text_selection_reversed_drag_direction() {
         let line_height = px(20.);
@@ -2250,7 +2142,6 @@ mod tests {
             line_height
         ));
     }
-
     #[test]
     fn test_point_in_text_selection_same_visual_line_with_different_y() {
         let line_height = px(20.);
@@ -2280,7 +2171,6 @@ mod tests {
             line_height
         ));
     }
-
     #[test]
     fn test_point_in_text_selection_same_visual_line_with_reversed_y() {
         let line_height = px(20.);

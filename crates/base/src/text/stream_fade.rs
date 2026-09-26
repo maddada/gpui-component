@@ -99,7 +99,7 @@ impl TextViewMotion {
 /// the block that owns it, plus the cell ordinal inside a table.
 ///
 /// Keys order as their leaves appear in the document.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
 pub(crate) struct TextLeafKey {
     block_start: usize,
     ordinal: usize,

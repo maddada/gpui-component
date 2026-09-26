@@ -93,6 +93,9 @@ pub use crate::Disableable;
 pub use element_ext::*;
 pub use global_state::GlobalState;
 pub use gpui_base::Root;
+/// Window-level text selection: the selected text of a window
+/// (`TextSelection::selected_text`), clearing it, and whether there is one.
+pub use gpui_base::TextSelection;
 pub use gpui_base::animation;
 pub(crate) use gpui_base::measurement_enabled as measure_enable;
 #[doc(hidden)]

@@ -14,6 +14,8 @@ use gpui::{
 };
 
 use crate::text_boundary::{line_range_at, word_range_at};
+
+pub(crate) mod runs;
 use crate::touch_selection::{
     EdgeDrag, SelectionEdge, TouchHandle, TouchSelectionSnapshot, caret_in_view,
 };
@@ -223,6 +225,9 @@ pub struct TextSelectionRegistration {
     self_scroll: bool,
     selection_edges: Option<(Bounds<Pixels>, Bounds<Pixels>)>,
     rendered: Option<WeakEntity<RenderedMarker>>,
+    /// The runs a `TextView` painted, in document order; `None` for any
+    /// other participant.
+    text_view_runs: Option<Vec<runs::TextRun>>,
 }
 
 impl TextSelectionRegistration {
@@ -238,7 +243,15 @@ impl TextSelectionRegistration {
             self_scroll: false,
             selection_edges: None,
             rendered: None,
+            text_view_runs: None,
         }
+    }
+
+    /// The text runs a `TextView` painted this frame, in document order,
+    /// which its selection is made against (see [`runs`]).
+    pub(crate) fn with_text_view_runs(mut self, runs: Vec<runs::TextRun>) -> Self {
+        self.text_view_runs = Some(runs);
+        self
     }
 
     /// Ties this registration to the retained state of the element reporting
@@ -600,6 +613,31 @@ fn dispatch_clear_handlers(handlers: Vec<ClearHandler>, cx: &mut App) {
     }
 }
 
+/// Repaints the `TextView`s whose selected text changed.
+fn notify_views(views: Vec<WeakEntity<crate::text::TextViewState>>, cx: &mut App) {
+    for view in views {
+        cx.notify(view.entity_id());
+    }
+}
+
+impl WindowSelectionState {
+    /// Tells each `TextView` participant whether the run selection covers
+    /// its text, which is what it answers `has_selection` from.
+    fn sync_run_coverage(&self, cx: &mut App) {
+        for (id, registration) in &self.participants {
+            if !self.run_groups.contains_key(id) {
+                continue;
+            }
+            let covered = self.runs.covers(*id);
+            if let Some(participant) = registration.participant.upgrade()
+                && participant.read(cx).run_covered != covered
+            {
+                participant.update(cx, |state, _| state.run_covered = covered);
+            }
+        }
+    }
+}
+
 struct SelectableTextState {
     fallback_copy_text: String,
     projected_copy_text: Option<String>,
@@ -610,6 +648,9 @@ struct SelectableTextState {
     clear: Option<ClearHandler>,
     copy: Option<CopyCallback>,
     content_key_resolver: Option<ContentKeyResolver>,
+    /// The window's `TextView` run selection covers some of this
+    /// participant's text.
+    run_covered: bool,
 }
 
 impl EventEmitter<TextSelectionEvent> for SelectableTextState {}
@@ -626,6 +667,7 @@ impl SelectableTextState {
             clear: None,
             copy: None,
             content_key_resolver: None,
+            run_covered: false,
         }
     }
 
@@ -720,14 +762,16 @@ impl SelectableTextState {
         cx.emit(TextSelectionEvent::AutoScroll(delta));
     }
 
-    fn focus(&self, window: &mut Window, cx: &mut App) {
+    fn focus(&self, window: &Window, cx: &mut App) {
         if let Some(callback) = self.on_focus.clone() {
             window.defer(cx, move |window, cx| callback(window, cx));
         }
     }
 
-    fn copy_item(&self, document_order: u64) -> Option<CopyItem> {
-        (self.snapshot.is_some() || self.local_selection).then(|| CopyItem {
+    /// `covered` when the participant's text is part of a run selection,
+    /// which it takes part in without a geometric snapshot.
+    fn copy_item(&self, document_order: u64, covered: bool) -> Option<CopyItem> {
+        (self.snapshot.is_some() || self.local_selection || covered).then(|| CopyItem {
             document_order,
             callback: self.copy.clone(),
             fallback: self
@@ -779,6 +823,12 @@ impl TextSelectionHandle {
     /// Returns whether participant-local selection is active.
     pub fn has_local_selection(&self, cx: &App) -> bool {
         self.0.read(cx).local_selection
+    }
+
+    /// Whether the window's `TextView` run selection covers some of this
+    /// participant's text.
+    pub(crate) fn has_run_selection(&self, cx: &App) -> bool {
+        self.0.read(cx).run_covered
     }
 
     /// Registers this participant and its geometry for the current frame.
@@ -1078,6 +1128,13 @@ struct WindowSelectionState {
     /// This entity, so that touch changes can notify observers from paths that
     /// only hold an [`App`].
     entity_id: Option<EntityId>,
+    /// The runs each selectable `TextView` painted last frame.
+    run_groups: HashMap<EntityId, runs::RunGroup>,
+    /// A selection of `TextView` text, made against `run_groups`.
+    runs: runs::RunSelection,
+    /// A `TextView` already started this press's selection from its own
+    /// listener, below any host container that stops the press.
+    press_began: bool,
 }
 
 impl WindowSelectionState {
@@ -1221,6 +1278,7 @@ impl WindowSelectionState {
         let mut handlers = Vec::new();
         for (id, participant) in stale {
             self.participants.remove(&id);
+            self.run_groups.remove(&id);
             if let Some(participant) = participant.upgrade() {
                 if let Some(handler) = participant.update(cx, |state, cx| state.clear_state(cx)) {
                     handlers.push(handler);
@@ -1271,6 +1329,17 @@ impl WindowSelectionState {
                 .is_none_or(|previous| {
                     previous.registration.selection_edges != registration.selection_edges
                 });
+        let mut registration = registration;
+        if let Some(runs) = registration.text_view_runs.take() {
+            self.run_groups.insert(
+                selection.entity_id(),
+                runs::RunGroup {
+                    order: registration.document_order,
+                    scope: registration.scope,
+                    runs,
+                },
+            );
+        }
         self.participants.insert(
             selection.entity_id(),
             ParticipantRegistration {
@@ -1308,6 +1377,25 @@ impl WindowSelectionState {
             self.anchor = None;
             self.cursor = None;
         }
+        // A press that touched text keeps its anchor, which a shift-press
+        // extends from, even when it selected nothing yet.
+        if !self.runs.did_hit_text {
+            self.runs.anchor = None;
+        }
+        // The views this gesture focused marked themselves as selecting; the
+        // gesture is over, and a `TextView` selection sends them no snapshot
+        // that would say so.
+        for participant in std::mem::take(&mut self.runs.focused) {
+            if let Some(participant) = self
+                .participants
+                .get(&participant)
+                .and_then(|registration| registration.participant.upgrade())
+            {
+                participant.update(cx, |state, cx| {
+                    cx.emit(TextSelectionEvent::SelectionChanged(state.snapshot))
+                });
+            }
+        }
         self.stop_anchor_auto_scroll(cx);
         self.publish_snapshots(cx);
     }
@@ -1320,6 +1408,10 @@ impl WindowSelectionState {
 
     fn clear_state(&mut self, cx: &mut App) -> Vec<ClearHandler> {
         self.stop_anchor_auto_scroll(cx);
+        let views = self.runs.clear();
+        self.runs.pending_extension = None;
+        notify_views(views, cx);
+        self.sync_run_coverage(cx);
         self.anchor = None;
         self.cursor = None;
         self.pending_extension_anchor = None;
@@ -1370,12 +1462,13 @@ impl WindowSelectionState {
 
     fn copy_items(&self, cx: &App) -> Vec<CopyItem> {
         self.participants
-            .values()
-            .filter_map(|registration| {
+            .iter()
+            .filter_map(|(id, registration)| {
                 let participant = registration.participant.upgrade()?;
-                participant
-                    .read(cx)
-                    .copy_item(registration.registration.document_order)
+                participant.read(cx).copy_item(
+                    registration.registration.document_order,
+                    self.runs.covers(*id),
+                )
             })
             .collect()
     }
@@ -1389,6 +1482,9 @@ impl WindowSelectionState {
     /// participant's painted text, as opposed to two points with nothing
     /// between them.
     fn selects_text(&self, cx: &App) -> bool {
+        if self.runs.has_spans() {
+            return true;
+        }
         self.snapshot().is_some()
             && self.participants.values().any(|registration| {
                 registration
@@ -1407,6 +1503,7 @@ impl WindowSelectionState {
     /// Returns whether a drag or a participant-local selection is active.
     pub fn has_selection(&self, cx: &App) -> bool {
         self.snapshot().is_some()
+            || self.runs.has_spans()
             || self.participants.values().any(|registration| {
                 registration
                     .participant
@@ -1439,7 +1536,13 @@ impl WindowSelectionState {
 
     fn prepare_for_mouse_down(&mut self, extend: bool, cx: &mut App) -> Vec<ClearHandler> {
         let pending_extension_anchor = extend.then(|| self.anchor.clone()).flatten();
+        let pending_run_anchor = extend.then_some(self.runs.anchor).flatten();
+        self.press_began = false;
         self.stop_anchor_auto_scroll(cx);
+        let views = self.runs.clear();
+        self.runs.pending_extension = pending_run_anchor;
+        notify_views(views, cx);
+        self.sync_run_coverage(cx);
         self.anchor = None;
         self.cursor = None;
         self.pending_extension_anchor = None;
@@ -1552,7 +1655,7 @@ impl WindowSelectionState {
 
     /// Keeps the selection a long press made, and opens the edit menu over it.
     fn keep_touch_selection(&mut self, cx: &mut App) {
-        self.touch.active = self.snapshot().is_some();
+        self.touch.active = self.snapshot().is_some() || self.runs.has_spans();
         self.touch.menu_open = self.touch.active;
         self.touch.drag = None;
         self.touch_changed(cx);
@@ -1597,6 +1700,39 @@ impl WindowSelectionState {
     /// and copied the one way, with handles that drag on from its ends.
     fn select_all_touched(&mut self, cx: &mut App) {
         if !self.touch.active {
+            return;
+        }
+        // A `TextView` selection selects all of the view it started in, from
+        // its first painted run to its last.
+        if let Some(anchor) = self.runs.anchor {
+            let document = runs::Document::new(&self.run_groups, self.active_scope);
+            let indices = document
+                .runs
+                .iter()
+                .enumerate()
+                .filter(|(_, (participant, _))| *participant == anchor.participant)
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            let (Some(first), Some(last)) = (indices.first(), indices.last()) else {
+                return;
+            };
+            let spans = document.resolve(
+                runs::DocPoint {
+                    index: *first,
+                    local: 0,
+                },
+                runs::DocPoint {
+                    index: *last,
+                    local: document.runs[*last].1.text.len(),
+                },
+            );
+            let views = self.runs.set_spans(spans);
+            notify_views(views, cx);
+            self.sync_run_coverage(cx);
+            self.runs.did_hit_text = true;
+            self.is_selecting = false;
+            self.touch.menu_open = true;
+            self.touch_changed(cx);
             return;
         }
         let Some((participant, registration)) = self.anchor_registration() else {
@@ -1666,6 +1802,7 @@ impl WindowSelectionState {
         let Some(snapshot) = self.touch_selection() else {
             return;
         };
+        let text_view_selection = self.runs.has_spans();
         let handlers = self.prepare_for_mouse_down(false, cx);
         dispatch_clear_handlers(handlers, cx);
         let held = snapshot.edge(edge.opposite());
@@ -1676,6 +1813,32 @@ impl WindowSelectionState {
             SelectionEdge::Start => point(held.left() - nudge, held.center().y),
             SelectionEdge::End => point(held.left() + nudge, held.center().y),
         };
+        if text_view_selection {
+            // A `TextView` selection is re-anchored on the run at the held
+            // end, and the finger moves its head.
+            let document = runs::Document::new(&self.run_groups, self.active_scope);
+            let Some(held) = document.nearest(anchor_point) else {
+                return;
+            };
+            let held_point = held.caret;
+            let run_point = document.run_point(held_point);
+            self.runs.anchor = Some(runs::RunAnchor {
+                start: run_point,
+                end: run_point,
+                participant: document.participant(held_point),
+                inside: true,
+            });
+            self.runs.granularity = runs::Granularity::Character;
+            self.runs.did_hit_text = true;
+            let drag = EdgeDrag::begin(edge, snapshot.edge(edge), finger);
+            self.is_selecting = true;
+            self.touch.active = true;
+            self.touch.menu_open = false;
+            self.touch.drag = Some(drag);
+            self.update_runs(drag.text_position(finger), window, cx);
+            self.touch_changed(cx);
+            return;
+        }
         let anchor = self.endpoint(anchor_point, None, cx);
         let drag = EdgeDrag::begin(edge, snapshot.edge(edge), finger);
         let cursor = self.endpoint(drag.text_position(finger), Some(window), cx);
@@ -1694,6 +1857,19 @@ impl WindowSelectionState {
         let Some(drag) = self.touch.drag else {
             return;
         };
+        if self.runs.anchor.is_some() {
+            // A handle never collapses a `TextView` selection either: at the
+            // other end it stops.
+            let before = self.runs.spans.clone();
+            self.update_in_window(drag.text_position(finger), window, cx);
+            if !self.runs.has_spans() {
+                let views = self.runs.set_spans(before);
+                notify_views(views, cx);
+                self.sync_run_coverage(cx);
+            }
+            self.touch_changed(cx);
+            return;
+        }
         let before = self.cursor.clone();
         self.update_in_window(drag.text_position(finger), window, cx);
         // A handle never collapses the selection: at the other end it stops,
@@ -1738,6 +1914,9 @@ impl WindowSelectionState {
         window: &mut Window,
         cx: &mut App,
     ) {
+        if self.begin_runs(position, 1, extend, window, cx) {
+            return;
+        }
         self.begin_impl(position, extend, true, Some(window), cx);
     }
 
@@ -1748,9 +1927,188 @@ impl WindowSelectionState {
         cx: &mut Context<Self>,
     ) {
         if !cx.has_active_drag() {
-            self.update_impl(position, Some(window), cx);
+            if self.runs.anchor.is_some() {
+                self.update_runs(position, window, cx);
+            } else {
+                self.update_impl(position, Some(window), cx);
+            }
             self.update_auto_scroll(position, window, cx);
         }
+    }
+
+    /// Starts a selection of `TextView` text for a press at `position`, when
+    /// the press is over one or in blank space nearer to one than to any other
+    /// participant. `click_count` 2 selects the word and 3 the line under the
+    /// press, and a following drag extends by that unit. Returns `false` when
+    /// the press is for another participant.
+    fn begin_runs(
+        &mut self,
+        position: Point<Pixels>,
+        click_count: usize,
+        extend: bool,
+        window: &Window,
+        cx: &mut App,
+    ) -> bool {
+        self.prune_dead_participants();
+        let document = runs::Document::new(&self.run_groups, self.active_scope);
+        if document.is_empty() {
+            return false;
+        }
+        let direct = document.hit(position, window);
+        if direct.is_none() && self.hits_other_participant(position, window) {
+            return false;
+        }
+        let Some(hit) = direct.or_else(|| document.nearest(position)) else {
+            return false;
+        };
+        let granularity = match (direct.is_some(), click_count) {
+            (true, 2) => runs::Granularity::Word,
+            (true, count) if count >= 3 => runs::Granularity::Line,
+            _ => runs::Granularity::Character,
+        };
+        let on_glyph = hit.on_glyph;
+        let (unit_start, unit_end) = document.unit(hit, granularity);
+        let participant = document.participant(hit.caret);
+        let inside = self
+            .participants
+            .get(&participant)
+            .is_some_and(|registration| registration.registration.hitbox.is_hovered(window));
+
+        // A shift-press extends the selection it follows from that
+        // selection's anchor.
+        let extended = extend
+            .then(|| self.runs.pending_extension.take().or(self.runs.anchor))
+            .flatten()
+            .and_then(|anchor| {
+                Some((
+                    anchor,
+                    document.locate(anchor.start)?,
+                    document.locate(anchor.end)?,
+                ))
+            });
+        self.runs.pending_extension = None;
+        let (anchor, start, end) = match extended {
+            Some((anchor, anchor_start, anchor_end)) => (
+                anchor,
+                anchor_start.min(unit_start),
+                anchor_end.max(unit_end),
+            ),
+            None => (
+                runs::RunAnchor {
+                    start: document.run_point(unit_start),
+                    end: document.run_point(unit_end),
+                    participant,
+                    inside,
+                },
+                unit_start,
+                unit_end,
+            ),
+        };
+        let spans = document.resolve(start, end);
+
+        self.anchor = None;
+        self.cursor = None;
+        self.did_hit_text = false;
+        // An anchor a shift-press extends from was kept because its press
+        // touched text.
+        self.runs.did_hit_text =
+            extended.is_some() || on_glyph || granularity != runs::Granularity::Character;
+        self.runs.anchor = Some(anchor);
+        self.runs.granularity = granularity;
+        self.is_selecting = true;
+        // Only a press that hit the view focuses it: one proxied from blank
+        // space must not take focus from wherever it was.
+        if inside {
+            self.focus_participant(participant, window, cx);
+        }
+        let views = self.runs.set_spans(spans);
+        notify_views(views, cx);
+        self.sync_run_coverage(cx);
+        true
+    }
+
+    /// Moves the head of a `TextView` selection to the text nearest
+    /// `position`, extending by the unit the press picked.
+    fn update_runs(&mut self, position: Point<Pixels>, window: &Window, cx: &mut App) {
+        if !self.is_selecting {
+            return;
+        }
+        let Some(anchor) = self.runs.anchor else {
+            return;
+        };
+        let document = runs::Document::new(&self.run_groups, self.active_scope);
+        // An anchor that is no longer painted (scrolled out of a virtualized
+        // list) keeps the spans it already resolved instead of collapsing them.
+        let (Some(anchor_start), Some(anchor_end)) =
+            (document.locate(anchor.start), document.locate(anchor.end))
+        else {
+            return;
+        };
+        let Some(hit) = document.nearest(position) else {
+            return;
+        };
+        // CDXC:FocusRouting 2026-09-17 WHY:
+        // A drag from blank space can highlight text while the composer retains keyboard focus and consumes Copy.
+        // Focus the first actual text hit without stealing focus for an ordinary blank click.
+        let focus =
+            (!self.runs.did_hit_text && hit.on_glyph).then(|| document.participant(hit.caret));
+        self.runs.did_hit_text |= hit.on_glyph;
+        let (head_start, head_end) = document.unit(hit, self.runs.granularity);
+        // The selection is the union of the anchored unit and the unit under
+        // the pointer, compared in document order.
+        let spans = if self.runs.did_hit_text {
+            document.resolve(anchor_start.min(head_start), anchor_end.max(head_end))
+        } else {
+            HashMap::new()
+        };
+        if let Some(participant) = focus {
+            self.focus_participant(participant, window, cx);
+        }
+        let views = self.runs.set_spans(spans);
+        notify_views(views, cx);
+        self.sync_run_coverage(cx);
+    }
+
+    /// Whether `position` is over a participant that is not a `TextView`,
+    /// which selects through its own geometry rather than the run registry.
+    fn hits_other_participant(&self, position: Point<Pixels>, window: &Window) -> bool {
+        self.participants.iter().any(|(id, registration)| {
+            let geometry = &registration.registration;
+            geometry.scope == self.active_scope
+                && !self.run_groups.contains_key(id)
+                && geometry.bounds.contains(&position)
+                && geometry.hitbox.is_hovered(window)
+        })
+    }
+
+    fn focus_participant(&mut self, participant: EntityId, window: &Window, cx: &mut App) {
+        if !self.runs.focused.contains(&participant) {
+            self.runs.focused.push(participant);
+        }
+        if let Some(participant) = self
+            .participants
+            .get(&participant)
+            .and_then(|registration| registration.participant.upgrade())
+        {
+            let focus = participant.read(cx).on_focus.clone();
+            if let Some(focus) = focus {
+                window.defer(cx, move |window, cx| focus(window, cx));
+            }
+        }
+    }
+
+    /// The selected part of one painted `TextView` run, as an offset range
+    /// into its own text; see [`runs::RunSelection::range_for`].
+    fn run_range(
+        &self,
+        key: runs::RunKey,
+        source_range: &Range<usize>,
+        source_text: &str,
+        atomic: bool,
+        len: usize,
+    ) -> Option<Range<usize>> {
+        self.runs
+            .range_for(key, source_range, source_text, atomic, len)
     }
 
     fn select_at(
@@ -1762,6 +2120,9 @@ impl WindowSelectionState {
     ) {
         GlobalState::init(cx);
         if GlobalState::is_text_selection_suppressed(cx) {
+            return;
+        }
+        if self.begin_runs(position, click_count, false, window, cx) {
             return;
         }
         let hit = self.endpoint(position, Some(window), cx);
@@ -2173,6 +2534,14 @@ impl WindowSelectionState {
 
     /// The live participant owning the anchor of the current gesture.
     fn anchor_participant(&self) -> Option<Entity<SelectableTextState>> {
+        if let Some(anchor) = self.runs.anchor {
+            return anchor
+                .inside
+                .then(|| self.participants.get(&anchor.participant))
+                .flatten()?
+                .participant
+                .upgrade();
+        }
         self.anchor
             .as_ref()
             .filter(|anchor| anchor.inside)?
@@ -2193,6 +2562,9 @@ impl WindowSelectionState {
     fn prune_dead_participants(&mut self) {
         self.participants
             .retain(|_, registration| registration.participant.upgrade().is_some());
+        let participants = &self.participants;
+        self.run_groups
+            .retain(|id, _| participants.contains_key(id));
     }
 }
 
@@ -2381,6 +2753,55 @@ impl TextSelection {
         }
     }
 
+    /// Starts the selection for a press on a `TextView`, from the view's own
+    /// mouse-down listener, unless this press already started one.
+    ///
+    /// The window layer only sees a press that bubbles all the way up, and
+    /// hosts routinely stop mouse-down propagation on a pane or a card to
+    /// claim focus, which made every `TextView` inside such a container
+    /// unselectable. The layer still owns blank-space presses, the drag, and
+    /// the release.
+    pub(crate) fn begin_text_view_press(
+        position: Point<Pixels>,
+        click_count: usize,
+        extend: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        GlobalState::init(cx);
+        if GlobalState::is_text_selection_suppressed(cx) {
+            return;
+        }
+        let Some(state) = live_text_selection_state(window, cx) else {
+            return;
+        };
+        if state.read(cx).press_began || state.read(cx).touch.covers(position) {
+            return;
+        }
+        state.update(cx, |state, cx| {
+            // A capture-phase listener cleared the previous selection already.
+            // A view the run registry does not hold (a scrollable one) leaves
+            // the press to the layer.
+            state.press_began = state.begin_runs(position, click_count, extend, window, cx);
+        });
+    }
+
+    /// The selected part of one painted `TextView` run, as an offset range
+    /// into the run's own text of `len` bytes.
+    pub(crate) fn run_range(
+        key: runs::RunKey,
+        source_range: &Range<usize>,
+        source_text: &str,
+        atomic: bool,
+        len: usize,
+        window: &Window,
+        cx: &App,
+    ) -> Option<Range<usize>> {
+        WindowSelectionState::existing(window, cx)?
+            .read(cx)
+            .run_range(key, source_range, source_text, atomic, len)
+    }
+
     /// Activates the opaque selection scope for this window.
     pub fn activate_scope(scope: TextSelectionScopeId, window: &mut Window, cx: &mut App) {
         let Some(state) = WindowSelectionState::existing(window, cx) else {
@@ -2544,6 +2965,22 @@ impl Element for TextSelectionLayer {
         let state = retain_text_selection_state(global_id, window, cx);
         // The handles and the menu register again as they paint this frame.
         state.update(cx, |state, _| state.touch.begin_frame());
+        // While a drag is live, content can move under a stationary pointer
+        // (auto-scroll, a streaming reply pushing text down). Re-resolve
+        // against the frame that is on screen, before this frame's runs
+        // replace it.
+        // A handle drag follows the finger instead (see `update_edge_drag`).
+        if state.read(cx).is_selecting
+            && state.read(cx).runs.did_hit_text
+            && state.read(cx).touch.drag.is_none()
+        {
+            let position = window.mouse_position();
+            state.update(cx, |state, cx| {
+                if !cx.has_active_drag() {
+                    state.update_runs(position, window, cx);
+                }
+            });
+        }
         TextSelectionLayerPrepaintState(state)
     }
 
@@ -2639,11 +3076,19 @@ fn paint_text_selection(state: &Entity<WindowSelectionState>, window: &mut Windo
                 state.prepare_for_mouse_down(event.click_count == 1 && event.modifiers.shift, cx)
             });
             dispatch_clear_handlers(handlers, cx);
+        } else if GlobalState::is_text_selection_suppressed(cx) {
+            // A component inside claimed the press after a `TextView` around
+            // it started a selection from its own listener; it takes it back.
+            state.update(cx, |state, cx| {
+                state.pending_extension_anchor = None;
+                if state.press_began {
+                    let handlers = state.clear_state(cx);
+                    cx.defer(move |cx| dispatch_clear_handlers(handlers, cx));
+                }
+            });
+        } else if state.read(cx).press_began {
+            // A `TextView` already started this press's selection.
         } else if event.click_count == 1 {
-            if GlobalState::is_text_selection_suppressed(cx) {
-                state.update(cx, |state, _| state.pending_extension_anchor = None);
-                return;
-            }
             state.update(cx, |state, cx| {
                 if !state.is_selecting {
                     state.begin_in_window(event.position, event.modifiers.shift, window, cx)
@@ -2651,9 +3096,6 @@ fn paint_text_selection(state: &Entity<WindowSelectionState>, window: &mut Windo
             });
             WindowSelectionState::resolve_content_keys(&state, cx);
         } else if event.click_count >= 2 {
-            if GlobalState::is_text_selection_suppressed(cx) {
-                return;
-            }
             let touch = GlobalState::is_touch_press(cx);
             state.update(cx, |state, cx| {
                 state.select_at(event.position, event.click_count, window, cx);
@@ -2702,7 +3144,7 @@ fn paint_text_selection(state: &Entity<WindowSelectionState>, window: &mut Windo
             dispatch_clear_handlers(handlers, cx);
             let selected = state.update(cx, |state, cx| {
                 state.select_at(event.start_position, 2, window, cx);
-                state.anchor.is_some()
+                state.anchor.is_some() || state.runs.has_spans()
             });
             if !selected {
                 return;
@@ -2773,9 +3215,11 @@ fn paint_text_selection(state: &Entity<WindowSelectionState>, window: &mut Windo
         }
     });
 
+    // The drag and the release run in the capture phase: a host element that
+    // stops their propagation must not freeze or strand a live selection.
     let mouse_move_state = state.downgrade();
     window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-        if phase.bubble()
+        if phase.capture()
             && let Some(state) = mouse_move_state.upgrade()
         {
             state.update(cx, |state, cx| {
@@ -2792,11 +3236,12 @@ fn paint_text_selection(state: &Entity<WindowSelectionState>, window: &mut Windo
 
     let mouse_up_state = state.downgrade();
     window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
-        if phase.bubble()
+        if phase.capture()
             && let Some(state) = mouse_up_state.upgrade()
         {
             state.update(cx, |state, cx| {
                 state.mouse_down_prepared = false;
+                state.press_began = false;
                 state.end(cx)
             });
         }
