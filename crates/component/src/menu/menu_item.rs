@@ -15,6 +15,7 @@ pub(crate) struct MenuItemElement {
     style: StyleRefinement,
     disabled: bool,
     selected: bool,
+    highlight_colors: Option<(gpui::Hsla, gpui::Hsla)>,
     on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
     on_hover: Option<Box<dyn Fn(&bool, &mut Window, &mut App) + 'static>>,
     children: SmallVec<[AnyElement; 2]>,
@@ -31,10 +32,21 @@ impl MenuItemElement {
             style: StyleRefinement::default(),
             disabled: false,
             selected: false,
+            highlight_colors: None,
             on_click: None,
             on_hover: None,
             children: SmallVec::new(),
         }
+    }
+
+    /// Set the background and text colors of a hovered or selected row.
+    pub(crate) fn highlight_colors(
+        mut self,
+        background: gpui::Hsla,
+        foreground: gpui::Hsla,
+    ) -> Self {
+        self.highlight_colors = Some((background, foreground));
+        self
     }
 
     /// Set ListItem as the selected item style.
@@ -93,6 +105,9 @@ impl ParentElement for MenuItemElement {
 
 impl RenderOnce for MenuItemElement {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let (highlight_background, highlight_foreground) = self
+            .highlight_colors
+            .unwrap_or((*cx.theme().tokens.accent, cx.theme().accent_foreground));
         h_flex()
             .id(self.id)
             .test_support()
@@ -114,12 +129,12 @@ impl RenderOnce for MenuItemElement {
             })
             .when(!self.disabled, |this| {
                 this.group_hover(self.group_name, |this| {
-                    this.bg(cx.theme().tokens.accent)
-                        .text_color(cx.theme().accent_foreground)
+                    this.bg(highlight_background)
+                        .text_color(highlight_foreground)
                 })
                 .when(self.selected, |this| {
-                    this.bg(cx.theme().tokens.accent)
-                        .text_color(cx.theme().accent_foreground)
+                    this.bg(highlight_background)
+                        .text_color(highlight_foreground)
                 })
                 .when_some(self.on_click, |this, on_click| {
                     this.on_mouse_down(MouseButton::Left, move |_, _, cx| {

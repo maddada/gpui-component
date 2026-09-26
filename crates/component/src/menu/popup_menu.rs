@@ -2,7 +2,8 @@ use crate::ThemeStyled as _;
 use crate::actions::{Cancel, Confirm, SelectDown, SelectUp};
 use crate::actions::{SelectLeft, SelectRight};
 use crate::menu::menu_item::MenuItemElement;
-use crate::scroll::ScrollableElement;
+use crate::scroll::{ScrollableElement, Scrollbar, ScrollbarMode};
+use crate::styled::popover_shadow;
 use crate::{ActiveTheme, ElementExt, Icon, IconName, Sizable as _, h_flex, v_flex};
 use crate::{Side, Size, kbd::Kbd};
 use gpui::{
@@ -279,6 +280,28 @@ impl PopupMenuItem {
     }
 }
 
+/// Menu-specific geometry and colors, independent of other themed controls.
+///
+/// Lets a host give its menus their own panel radius, padding, row size and
+/// colors without changing the theme every other control reads.
+#[derive(Clone, Copy)]
+pub struct PopupMenuAppearance {
+    /// Draw the popover shadow. Without it the panel edge is a 1px `border`
+    /// inside the panel, so a menu hosted in a window of its own size is not
+    /// cut off at the window edge.
+    pub shadow: bool,
+    pub panel_radius: Pixels,
+    pub item_radius: Pixels,
+    pub padding: Pixels,
+    pub item_padding_x: Pixels,
+    pub item_height: Pixels,
+    pub separator_margin: Pixels,
+    pub background: gpui::Hsla,
+    pub foreground: gpui::Hsla,
+    pub border: gpui::Hsla,
+    pub hover: gpui::Hsla,
+}
+
 pub struct PopupMenu {
     pub(crate) focus_handle: FocusHandle,
     pub(crate) menu_items: Vec<PopupMenuItem>,
@@ -297,6 +320,8 @@ pub struct PopupMenu {
     min_width: Option<Pixels>,
     max_width: Option<Pixels>,
     max_height: Option<Pixels>,
+    items_padding_bottom: Option<Pixels>,
+    appearance: Option<PopupMenuAppearance>,
     bounds: Bounds<Pixels>,
     size: Size,
     check_side: Side,
@@ -304,6 +329,8 @@ pub struct PopupMenu {
     /// The parent menu of this menu, if this is a submenu
     parent_menu: Option<WeakEntity<Self>>,
     scrollable: bool,
+    scrollbar_show: Option<ScrollbarMode>,
+    scrollbar_thickness: Option<Pixels>,
     external_link_icon: bool,
     scroll_handle: ScrollHandle,
     // This will update on render
@@ -343,9 +370,13 @@ impl PopupMenu {
             min_width: None,
             max_width: None,
             max_height: None,
+            items_padding_bottom: None,
+            appearance: None,
             check_side: Side::Left,
             bounds: Bounds::default(),
             scrollable: false,
+            scrollbar_show: None,
+            scrollbar_thickness: None,
             scroll_handle: ScrollHandle::default(),
             external_link_icon: true,
             size: Size::default(),
@@ -361,6 +392,13 @@ impl PopupMenu {
         f: impl FnOnce(Self, &mut Window, &mut Context<PopupMenu>) -> Self,
     ) -> Entity<Self> {
         cx.new(|cx| f(Self::new(cx), window, cx))
+    }
+
+    /// Give this menu (and the submenus it builds afterwards) its own geometry
+    /// and colors instead of the theme's.
+    pub fn appearance(mut self, appearance: PopupMenuAppearance) -> Self {
+        self.appearance = Some(appearance);
+        self
     }
 
     /// Set the focus handle of Entity to handle actions.
@@ -443,9 +481,27 @@ impl PopupMenu {
         self
     }
 
+    /// Override the bottom padding of the menu items column.
+    pub fn items_padding_bottom(mut self, padding: impl Into<Pixels>) -> Self {
+        self.items_padding_bottom = Some(padding.into());
+        self
+    }
+
     /// Set the menu to be scrollable to show vertical scrollbar.
     pub fn scrollable(mut self, scrollable: bool) -> Self {
         self.scrollable = scrollable;
+        self
+    }
+
+    /// Set how the scrollable menu's scrollbar is revealed.
+    pub fn scrollbar_show(mut self, mode: ScrollbarMode) -> Self {
+        self.scrollbar_show = Some(mode);
+        self
+    }
+
+    /// Set the scrollable menu's scrollbar track and thumb thickness.
+    pub fn scrollbar_thickness(mut self, thickness: impl Into<Pixels>) -> Self {
+        self.scrollbar_thickness = Some(thickness.into());
         self
     }
 
@@ -713,9 +769,13 @@ impl PopupMenu {
         let submenu = PopupMenu::build(window, cx, f);
         let parent_menu = cx.entity().downgrade();
         let parent_priority = self.priority;
+        let appearance = self.appearance;
         submenu.update(cx, |view, _| {
             view.parent_menu = Some(parent_menu);
             view.priority = parent_priority + 1;
+            if let Some(appearance) = appearance {
+                view.appearance = Some(appearance);
+            }
         });
 
         self.menu_items.push(
@@ -1222,6 +1282,9 @@ impl PopupMenu {
             Size::Small => (px(20.), options.radius.half()),
             _ => (px(26.), options.radius),
         };
+        let item_height = self
+            .appearance
+            .map_or(item_height, |style| style.item_height);
 
         let this = MenuItemElement::new(ix, &group_name)
             .relative()
@@ -1229,6 +1292,11 @@ impl PopupMenu {
             .py_0()
             .px(INNER_PADDING)
             .rounded(radius)
+            .when_some(self.appearance, |this, style| {
+                this.px(style.item_padding_x)
+                    .highlight_colors(style.hover, style.foreground)
+                    .text_color(style.foreground)
+            })
             .items_center()
             .selected(selected)
             .on_hover(cx.listener(move |this, hovered, _, cx| {
@@ -1251,6 +1319,12 @@ impl PopupMenu {
                 .mx_neg_1()
                 .border_b(px(2.))
                 .border_color(cx.theme().border)
+                .when_some(self.appearance, |this, style| {
+                    this.mx(px(4.0))
+                        .my(style.separator_margin)
+                        .border_b(px(1.0))
+                        .border_color(style.border)
+                })
                 .disabled(true),
             PopupMenuItem::Label(label) => this.disabled(true).cursor_default().child(
                 h_flex()
@@ -1457,8 +1531,12 @@ impl Render for PopupMenu {
         let options = RenderOptions {
             has_left_icon,
             check_side: self.check_side,
-            radius: cx.theme().radius.min(px(8.)),
+            radius: self
+                .appearance
+                .map_or(cx.theme().radius.min(px(8.)), |style| style.item_radius),
         };
+        let custom_scrollbar = self.scrollable
+            && (self.scrollbar_show.is_some() || self.scrollbar_thickness.is_some());
 
         v_flex()
             .id("popup-menu")
@@ -1475,12 +1553,26 @@ impl Render for PopupMenu {
             .on_mouse_down_out(cx.listener(Self::on_mouse_down_out))
             .popover_style(cx)
             .text_color(cx.theme().popover_foreground)
+            .when_some(self.appearance, |this, style| {
+                this.rounded(style.panel_radius)
+                    .bg(style.background)
+                    .text_color(style.foreground)
+                    .map(|this| {
+                        if style.shadow {
+                            this.shadow(popover_shadow(style.border, 1.))
+                        } else {
+                            this.shadow_none().border_1().border_color(style.border)
+                        }
+                    })
+            })
             .relative()
             .occlude()
             .child(
                 v_flex()
                     .id("items")
                     .p_1()
+                    .when_some(self.appearance, |this, style| this.p(style.padding))
+                    .when_some(self.items_padding_bottom, |this, padding| this.pb(padding))
                     .gap_y_0p5()
                     .min_w(rems(8.))
                     .when_some(self.min_width, |this, min_width| this.min_w(min_width))
@@ -1500,8 +1592,20 @@ impl Render for PopupMenu {
                     )
                     .on_prepaint(move |bounds, _, cx| view.update(cx, |r, _| r.bounds = bounds)),
             )
-            .when(self.scrollable, |this| {
+            .when(self.scrollable && !custom_scrollbar, |this| {
                 this.vertical_scrollbar(&self.scroll_handle)
+            })
+            .when(custom_scrollbar, |this| {
+                this.child(
+                    div().absolute().inset_0().child(
+                        Scrollbar::vertical(&self.scroll_handle)
+                            .viewport_from_layout()
+                            .when_some(self.scrollbar_show, |this, mode| this.mode(mode))
+                            .when_some(self.scrollbar_thickness, |this, thickness| {
+                                this.thickness(thickness)
+                            }),
+                    ),
+                )
             })
     }
 }
