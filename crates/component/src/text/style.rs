@@ -49,6 +49,17 @@ pub struct TextViewStyle {
     /// on a single line — columns then never shrink and the table scrolls as
     /// soon as the content is wider than the frame.
     pub table_cell: StyleRefinement,
+    /// In scroll mode, the widest a column may grow to fit its longest cell.
+    /// A capped column does not shrink below its capped width either: its
+    /// cells wrap inside it (`table_wrap_cells`) or clip on one line, and a
+    /// table wider than its frame scrolls. `None` keeps the adaptive layout.
+    pub table_cell_max_width: Option<Pixels>,
+    /// With `table_cell_max_width`, wrap a cell's text inside its column
+    /// instead of keeping it on one line and clipping it at the cap.
+    pub table_wrap_cells: bool,
+    /// In scroll mode, draw a horizontal scrollbar of this thickness under a
+    /// table wider than its frame, shown while the pointer is over the table.
+    pub table_scrollbar: Option<Pixels>,
     /// Style refinement applied to the box that draws the table's frame and
     /// holds its rows, after [`Self::table`]. In scroll mode this is the
     /// scroll viewport.
@@ -96,6 +107,9 @@ impl Default for TextViewStyle {
             table: StyleRefinement::default(),
             table_head: StyleRefinement::default(),
             table_cell: StyleRefinement::default(),
+            table_cell_max_width: None,
+            table_wrap_cells: false,
+            table_scrollbar: None,
             table_track: StyleRefinement::default(),
             table_row: StyleRefinement::default(),
             table_head_row: StyleRefinement::default(),
@@ -127,6 +141,9 @@ impl PartialEq for TextViewStyle {
             && self.table == other.table
             && self.table_head == other.table_head
             && self.table_cell == other.table_cell
+            && self.table_cell_max_width == other.table_cell_max_width
+            && self.table_wrap_cells == other.table_wrap_cells
+            && self.table_scrollbar == other.table_scrollbar
             && self.table_track == other.table_track
             && self.table_row == other.table_row
             && self.table_head_row == other.table_head_row

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use gpui::{HighlightStyle, Hsla, Rems, StyleRefinement, rems};
+use gpui::{HighlightStyle, Hsla, Pixels, Rems, StyleRefinement, rems};
 
 use crate::ColorTokens;
 
@@ -27,6 +27,9 @@ pub struct TextViewStyle {
     table_track: StyleRefinement,
     table_row: StyleRefinement,
     table_head_cell: StyleRefinement,
+    table_cell_max_width: Option<Pixels>,
+    table_wrap_cells: bool,
+    table_scrollbar: Option<Pixels>,
     list: StyleRefinement,
     list_marker: StyleRefinement,
     inline_code: HighlightStyle,
@@ -51,6 +54,9 @@ impl PartialEq for TextViewStyle {
             && self.table_track == other.table_track
             && self.table_row == other.table_row
             && self.table_head_cell == other.table_head_cell
+            && self.table_cell_max_width == other.table_cell_max_width
+            && self.table_wrap_cells == other.table_wrap_cells
+            && self.table_scrollbar == other.table_scrollbar
             && self.list == other.list
             && self.list_marker == other.list_marker
             && self.inline_code == other.inline_code
@@ -96,6 +102,9 @@ impl TextViewStyle {
             table_track: StyleRefinement::default(),
             table_row: StyleRefinement::default(),
             table_head_cell: StyleRefinement::default(),
+            table_cell_max_width: None,
+            table_wrap_cells: false,
+            table_scrollbar: None,
             list: StyleRefinement::default(),
             list_marker: StyleRefinement::default(),
             inline_code: HighlightStyle {
@@ -237,6 +246,31 @@ impl TextViewStyle {
         self
     }
 
+    /// In the scroll table layout, caps how wide a column may grow to fit its
+    /// longest cell. A capped column never shrinks below its capped width
+    /// either: its cells wrap inside it ([`Self::with_table_wrap_cells`]) or
+    /// clip on one line, and a table wider than its frame scrolls. `None`
+    /// (the default) keeps the adaptive layout.
+    pub fn with_table_cell_max_width(mut self, width: Option<Pixels>) -> Self {
+        self.table_cell_max_width = width;
+        self
+    }
+
+    /// With a column cap, wraps a cell's text inside its column instead of
+    /// keeping it on one line and clipping it at the cap.
+    pub fn with_table_wrap_cells(mut self, wrap: bool) -> Self {
+        self.table_wrap_cells = wrap;
+        self
+    }
+
+    /// In the scroll table layout, draws a horizontal scrollbar of this
+    /// thickness in a strip under a table wider than its frame, shown while
+    /// the pointer is over the table.
+    pub fn with_table_scrollbar(mut self, thickness: Option<Pixels>) -> Self {
+        self.table_scrollbar = thickness;
+        self
+    }
+
     /// Sets the style refinement applied to a list, where its indent and item
     /// spacing (`gap`) live.
     pub fn with_list(mut self, style: StyleRefinement) -> Self {
@@ -334,6 +368,21 @@ impl TextViewStyle {
     /// The style refinement for a table header cell.
     pub fn table_head_cell(&self) -> &StyleRefinement {
         &self.table_head_cell
+    }
+
+    /// The widest a scroll-layout table column may grow, when capped.
+    pub fn table_cell_max_width(&self) -> Option<Pixels> {
+        self.table_cell_max_width
+    }
+
+    /// Whether capped table cells wrap rather than clip.
+    pub fn table_wrap_cells(&self) -> bool {
+        self.table_wrap_cells
+    }
+
+    /// The thickness of the scrollbar under a wide table, when shown.
+    pub fn table_scrollbar(&self) -> Option<Pixels> {
+        self.table_scrollbar
     }
 
     /// The style refinement for a list.

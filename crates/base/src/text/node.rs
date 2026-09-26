@@ -14,7 +14,7 @@ use gpui::{
 use markdown::mdast;
 
 use crate::{
-    StyledExt, h_flex, v_flex,
+    Scrollbar, ScrollbarMode, ScrollbarThumbStyle, StyledExt, h_flex, v_flex,
     scrollable_mask::horizontal_scroll_area,
     text::{
         CodeBlockActionsFn, CodeBlockHighlighterFn, LinkClickHandlerFn, MarkdownExtensions,
@@ -2481,14 +2481,41 @@ fn slice_backgrounds(
     slice_ranges(backgrounds, start, end, |range, color| (range, *color))
 }
 
-const CELL_PAD_PX: f32 = 16.0; // px_2 horizontal padding
+const CELL_PAD_PX: f32 = 8.0; // px_2 horizontal padding, per side
 const CELL_MIN_PX: f32 = 48.0;
 const CELL_BORDER_PX: f32 = 1.0; // border_r_1 drawn by every column but the last
 
+/// The horizontal padding and the right border a table cell draws, from the
+/// cell refinement a host gave it (`px_2` and `border_r_1` otherwise), so a
+/// measured column leaves its text the full width instead of clipping the
+/// last glyphs.
+fn table_cell_insets(style: &TextViewStyle, rem_size: Pixels) -> (f32, f32) {
+    let length = |side: Option<DefiniteLength>, default: f32| {
+        side.map_or(default, |side| {
+            f32::from(side.to_pixels(px(0.).into(), rem_size))
+        })
+    };
+    let padding = &style.table_cell().padding;
+    let border = style
+        .table_cell()
+        .border_widths
+        .right
+        .map_or(CELL_BORDER_PX, |width| {
+            f32::from(width.to_pixels(rem_size))
+        });
+    (
+        length(padding.left, CELL_PAD_PX) + length(padding.right, CELL_PAD_PX),
+        border,
+    )
+}
+
 /// The max-content width of every table column: the widest cell line,
 /// shaped with the runs the cell renders with, plus the cell's padding and
-/// border. Never capped: a cap would clip overflowing text *and* leave it
-/// outside the scrollable width, making it unreachable.
+/// border. A header is measured in the weight it is drawn in. Never capped
+/// here: a cap would clip overflowing text *and* leave it outside the
+/// scrollable width, making it unreachable, so only a host that asks for one
+/// ([`TextViewStyle::table_cell_max_width`]) gets it, with wrapping or an
+/// explicit clip.
 fn measure_table_columns(
     table: &Table,
     col_count: usize,
@@ -2496,10 +2523,16 @@ fn measure_table_columns(
     window: &mut Window,
     cx: &mut App,
 ) -> Vec<f32> {
-    let text_style = window.text_style();
-    let font_size = text_style.font_size.to_pixels(window.rem_size());
+    let body_style = window.text_style();
+    let font_size = body_style.font_size.to_pixels(window.rem_size());
+    let mut head_style = body_style.clone();
+    if let Some(weight) = node_cx.style.table_head_cell().text.font_weight {
+        head_style.font_weight = weight;
+    }
+    let (cell_pad, cell_border) = table_cell_insets(&node_cx.style, window.rem_size());
     let mut col_w = vec![CELL_MIN_PX; col_count];
-    for row in table.children.iter() {
+    for (row_ix, row) in table.children.iter().enumerate() {
+        let text_style = if row_ix == 0 { &head_style } else { &body_style };
         for (ix, cell) in row.children.iter().enumerate() {
             let Some(slot) = col_w.get_mut(ix) else {
                 continue;
@@ -2512,12 +2545,8 @@ fn measure_table_columns(
             {
                 let items = cell.children.inline_flow_items(None, &[], &[], node_cx, cx);
                 let width = super::inline_flow::intrinsic_width(&items, window, cx);
-                let border = if ix + 1 < col_count {
-                    CELL_BORDER_PX
-                } else {
-                    0.
-                };
-                *slot = slot.max(f32::from(width) + CELL_PAD_PX + border);
+                let border = if ix + 1 < col_count { cell_border } else { 0. };
+                *slot = slot.max(f32::from(width) + cell_pad + border);
                 continue;
             }
             let text = cell.children.text();
@@ -2556,7 +2585,7 @@ fn measure_table_columns(
                     if highlights.iter().any(|(_, h)| h.font_size_scale.is_some()) {
                         line_w += px(crate::text::inline_flow::INLINE_CODE_PADDING * 2.);
                     }
-                    let runs = text_runs(range.len(), &text_style, &highlights);
+                    let runs = text_runs(range.len(), text_style, &highlights);
                     line_w += window
                         .text_system()
                         .layout_line(&line[range], font_size * scale, &runs, None)
@@ -2566,15 +2595,50 @@ fn measure_table_columns(
             }
             // Border-box widths, so the padding and border the cell draws
             // must leave the measured text its full width.
-            let border = if ix + 1 < col_count {
-                CELL_BORDER_PX
-            } else {
-                0.
-            };
-            *slot = slot.max(w + CELL_PAD_PX + border);
+            let border = if ix + 1 < col_count { cell_border } else { 0. };
+            *slot = slot.max(w + cell_pad + border);
         }
     }
     col_w
+}
+
+/// The group a table's horizontal scrollbar is revealed by.
+const TABLE_SCROLL_GROUP: &str = "text-view-table-scroll";
+/// The air between the bottom of a table and the scrollbar under it.
+const TABLE_SCROLLBAR_GAP: Pixels = px(3.);
+
+/// The horizontal bar under a table wider than its frame
+/// ([`TextViewStyle::table_scrollbar`]): a strip of its own below the table
+/// rather than over its last row, `thickness` thick, shown while the pointer
+/// is over the table. It draws nothing while the table fits.
+fn table_scrollbar(id: ElementId, scroll_handle: &ScrollHandle, thickness: Pixels) -> Div {
+    let thumb = move |style: ScrollbarThumbStyle| {
+        style
+            .width(thickness)
+            .inset(px(0.))
+            .radius(thickness / 2.)
+    };
+    div()
+        .relative()
+        .w_full()
+        .h(thickness + TABLE_SCROLLBAR_GAP)
+        .opacity(0.)
+        .group_hover(TABLE_SCROLL_GROUP, |style| style.opacity(1.))
+        .child(
+            Scrollbar::horizontal(scroll_handle)
+                .id(id)
+                .mode(ScrollbarMode::Always)
+                .viewport_from_layout()
+                .styles(|styles| {
+                    styles
+                        .track(|style| style.width(thickness))
+                        .track_hover(|style| style.width(thickness))
+                        .track_active(|style| style.width(thickness))
+                        .thumb(thumb)
+                        .thumb_hover(thumb)
+                        .thumb_active(thumb)
+                }),
+        )
 }
 
 impl Paragraph {
@@ -3066,13 +3130,28 @@ impl BlockNode {
         const CELL_WRAP_MAX_PX: f32 = 480.0;
         const TABLE_BORDER_PX: f32 = 2.0; // the track's border_1, left + right
 
-        let col_w = measure_table_columns(table, col_count, node_cx, window, cx);
+        let mut col_w = measure_table_columns(table, col_count, node_cx, window, cx);
         let style = &node_cx.style;
+        // A host's column cap (`table_cell_max_width`): no column grows past
+        // it, and none shrinks below its capped width either — the cells wrap
+        // inside it (`table_wrap_cells`) or clip on one line, and a table
+        // wider than its frame scrolls, which is how a long row stays readable
+        // in a narrow pane.
+        let cap = style
+            .table_cell_max_width()
+            .map(|cap| f32::from(cap).max(CELL_MIN_PX));
+        if let Some(cap) = cap {
+            for width in &mut col_w {
+                *width = width.min(cap);
+            }
+        }
         // Nowrap cells (via the `table_cell` refinement, which cascades to
         // the cell text) must never shrink below their single-line content,
         // so their floor is the content width itself.
-        let nowrap = style.table_cell().text.white_space == Some(WhiteSpace::Nowrap);
-        let col_min_w: Vec<f32> = if nowrap {
+        let nowrap = cap.is_none()
+            && style.table_cell().text.white_space == Some(WhiteSpace::Nowrap);
+        let clip = cap.is_some() && !style.table_wrap_cells();
+        let col_min_w: Vec<f32> = if nowrap || cap.is_some() {
             col_w.clone()
         } else {
             col_w
@@ -3084,7 +3163,23 @@ impl BlockNode {
                 })
                 .collect()
         };
-        let min_total_w: f32 = col_min_w.iter().sum::<f32>() + TABLE_BORDER_PX;
+        // The viewport draws the table's frame: its default border, then the
+        // host's `table` and `table_track` refinements.
+        let frame = StyleRefinement::default()
+            .bg(cx.theme().tokens.colors.surface)
+            .border_1()
+            .border_color(style.border())
+            .refine_style(style.table())
+            .refine_style(style.table_track());
+        let frame_border = [frame.border_widths.left, frame.border_widths.right]
+            .into_iter()
+            .map(|width| {
+                width.map_or(TABLE_BORDER_PX / 2., |width| {
+                    f32::from(width.to_pixels(window.rem_size()))
+                })
+            })
+            .sum::<f32>();
+        let min_total_w: f32 = col_min_w.iter().sum::<f32>() + frame_border;
 
         let scroll_handle = window
             .use_keyed_state(
@@ -3121,6 +3216,7 @@ impl BlockNode {
                         .flex_shrink(1.)
                         .min_w(px(min_width))
                         .overflow_hidden()
+                        .when(clip, |this| this.whitespace_nowrap())
                         .when(align == ColumnumnAlign::Center, |this| this.text_center())
                         .when(align == ColumnumnAlign::Right, |this| this.text_right())
                         .px_2()
@@ -3169,12 +3265,7 @@ impl BlockNode {
                 horizontal_scroll_area(
                     block_element_id("table", table.span, options.ix),
                     &scroll_handle,
-                    &StyleRefinement::default()
-                        .bg(cx.theme().tokens.colors.surface)
-                        .border_1()
-                        .border_color(style.border())
-                        .refine_style(style.table())
-                        .refine_style(style.table_track()),
+                    &frame,
                     // Row track sized to `max(viewport, column floors)`:
                     // `min_w_full` fills the frame while the columns can still
                     // shrink-to-fit (their text wrapping), the definite
@@ -3183,6 +3274,13 @@ impl BlockNode {
                     div().min_w_full().w(px(min_total_w)).children(rows),
                 ),
             )
+            .when_some(style.table_scrollbar(), |this, thickness| {
+                this.group(TABLE_SCROLL_GROUP).child(table_scrollbar(
+                    block_element_id("table-scrollbar", table.span, options.ix),
+                    &scroll_handle,
+                    thickness,
+                ))
+            })
             // Custom actions row (e.g. copy / download) rendered below the
             // table. The hook's element spans full width; alignment is up to
             // the caller (e.g. `h_flex().justify_end()`). The gap keeps hover
