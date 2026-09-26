@@ -19,6 +19,10 @@ use std::{any::TypeId, rc::Rc};
 
 pub(crate) fn init(cx: &mut App) {
     gpui_base::Root::register_plugin::<WindowState>(cx, WindowState::new);
+    // Its own root plugin, so `Root`'s tooltip helpers can reach it from any window.
+    gpui_base::Root::register_plugin::<gpui_base::TooltipOverlay>(cx, |_, _| {
+        gpui_base::TooltipOverlay::new().render_with(render_tooltip)
+    });
 }
 
 /// Component-owned window state and presentation; Base owns the actual root.
@@ -27,7 +31,6 @@ pub(crate) struct WindowState {
     pub(crate) active_dialogs: Vec<ActiveDialog>,
     pub(super) focused_input: Option<AnyInputState>,
     pub notification: Entity<NotificationList>,
-    pub(crate) tooltip_overlay: Entity<gpui_base::TooltipOverlay>,
     pub(crate) native_menu_overlay: Entity<FallbackMenuOverlay>,
     touch_selection_overlay: Entity<WindowTouchSelectionOverlay>,
     sheet_size: Option<DefiniteLength>,
@@ -76,8 +79,6 @@ impl WindowState {
             active_dialogs: Vec::new(),
             focused_input: None,
             notification: cx.new(|cx| NotificationList::new(window, cx)),
-            tooltip_overlay: cx
-                .new(|_| gpui_base::TooltipOverlay::new().render_with(render_tooltip)),
             native_menu_overlay: cx.new(|_| FallbackMenuOverlay::new()),
             touch_selection_overlay: cx.new(|cx| WindowTouchSelectionOverlay::new(window, cx)),
             sheet_size: None,
@@ -412,15 +413,6 @@ impl WindowState {
         cx.notify();
     }
 
-    /// Get the tooltip overlay entity for this window.
-    pub(crate) fn tooltip_overlay(
-        window: &Window,
-        cx: &App,
-    ) -> Option<Entity<gpui_base::TooltipOverlay>> {
-        let root = Self::entity(window, cx)?;
-        Some(root.read(cx).tooltip_overlay.clone())
-    }
-
     /// Get the fallback native-menu overlay entity for this window.
     pub(crate) fn native_menu_overlay(
         window: &Window,
@@ -465,7 +457,6 @@ impl Render for WindowState {
             .inset_0()
             .child(WindowStateLayers { root: cx.entity() })
             .child(self.touch_selection_overlay.clone())
-            .child(self.tooltip_overlay.clone())
             .child(self.native_menu_overlay.clone())
     }
 }

@@ -1,4 +1,3 @@
-use crate::root::WindowState;
 use std::{cell::Cell, rc::Rc, time::Duration};
 
 use gpui::{
@@ -7,7 +6,7 @@ use gpui::{
     StyleRefinement, Styled, Window, div, prelude::FluentBuilder, px,
 };
 use gpui_base::{
-    Tooltip as BaseTooltip, TooltipOverlay as BaseTooltipOverlay,
+    Root, Tooltip as BaseTooltip, TooltipOverlay as BaseTooltipOverlay,
     TooltipRequest as BaseTooltipRequest, TooltipTransition as BaseTooltipTransition,
 };
 
@@ -294,7 +293,7 @@ pub trait ManagedTooltipExt: StatefulInteractiveElement + crate::ElementExt + Si
         })
         .on_hover({
             move |hovered, window, cx| {
-                if let Some(overlay) = WindowState::tooltip_overlay(window, cx) {
+                if let Some(overlay) = Root::tooltip_overlay(window, cx) {
                     let bounds = trigger_bounds_cell.get();
                     if *hovered {
                         overlay.update(cx, |o: &mut BaseTooltipOverlay, cx| {
@@ -309,7 +308,7 @@ pub trait ManagedTooltipExt: StatefulInteractiveElement + crate::ElementExt + Si
             }
         })
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-            if let Some(overlay) = WindowState::tooltip_overlay(window, cx) {
+            if let Some(overlay) = Root::tooltip_overlay(window, cx) {
                 overlay.update(cx, |overlay, cx| overlay.hide(cx));
             }
         })

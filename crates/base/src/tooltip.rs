@@ -2,14 +2,14 @@ use std::{rc::Rc, time::Duration};
 
 use gpui::{
     AnyElement, AnyView, App, Bounds, Context, DispatchPhase, Display, Div, Edges, Element,
-    ElementId, GlobalElementId, Half as _, InspectorElementId, InteractiveElement, IntoElement,
-    LayoutId, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Position, Render,
-    RenderOnce, Role, ScrollWheelEvent, Size, Stateful, StatefulInteractiveElement, Style, Styled,
-    Task, Window, canvas, deferred, div, point, px,
+    ElementId, Entity, GlobalElementId, Half as _, InspectorElementId, InteractiveElement,
+    IntoElement, LayoutId, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Position,
+    Render, RenderOnce, Role, ScrollWheelEvent, Size, Stateful, StatefulInteractiveElement, Style,
+    Styled, Task, Window, canvas, deferred, div, point, px,
 };
 
 use crate::{
-    Placement, Positioner,
+    Placement, Positioner, Root, RootPlugin,
     positioner::{clamp, frame_insets, resolve_side},
 };
 
@@ -231,6 +231,9 @@ pub enum TooltipTransition {
 ///
 /// Show requests are ignored on iOS and Android, where touch input must not
 /// open hover tooltips. This does not control GPUI's native `.tooltip()` API.
+///
+/// Registered as a [`RootPlugin`], it is the window's managed-tooltip overlay
+/// that [`Root::tooltip_overlay`] and the other `Root` tooltip helpers reach.
 pub struct TooltipOverlay {
     enabled: bool,
     content: Option<TooltipRequest>,
@@ -358,6 +361,33 @@ impl TooltipOverlay {
         self.request_show(TooltipRequest::new(trigger_bounds, build), window, cx);
     }
 
+    /// Show a tooltip at once, anchored to `trigger_bounds` in this window, for a trigger drawn in
+    /// a child window over it: that trigger's hover never reaches this window, and a small child
+    /// window cannot hold the tooltip itself. The caller owns the show delay and the hide.
+    pub fn show_now(
+        &mut self,
+        trigger_bounds: Bounds<Pixels>,
+        placement: ManagedTooltipPlacement,
+        build: Rc<dyn Fn(&mut Window, &mut App) -> AnyView>,
+        cx: &mut Context<Self>,
+    ) {
+        self.next_epoch();
+        self.show_task = None;
+        self.hide_task = None;
+        self.active_trigger_bounds = Some(trigger_bounds);
+        self.previous_bounds = None;
+        self.had_recent_tooltip = false;
+        self.is_switching = false;
+        self.content = Some(TooltipRequest {
+            build,
+            trigger_bounds,
+            placement,
+            discrete_show_delay: None,
+        });
+        self.animation_epoch += 1;
+        cx.notify();
+    }
+
     /// Request hiding the current tooltip. Starts a brief grace period so that
     /// moving to another tooltip-bearing element feels instant.
     pub fn request_hide(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -460,6 +490,8 @@ impl Default for TooltipOverlay {
     }
 }
 
+impl RootPlugin for TooltipOverlay {}
+
 impl Render for TooltipOverlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(content) = self.content.as_ref() else {
@@ -523,6 +555,41 @@ impl Render for TooltipOverlay {
         .with_priority(TOOLTIP_PRIORITY);
 
         div().child(dismiss_guard).child(tooltip).into_any_element()
+    }
+}
+
+impl Root {
+    /// The window's managed-tooltip overlay, when its root mounts one.
+    pub fn tooltip_overlay(window: &Window, cx: &App) -> Option<Entity<TooltipOverlay>> {
+        window.root::<Root>()??.read(cx).plugin::<TooltipOverlay>()
+    }
+
+    /// Dismiss the window's managed tooltip and cancel any pending show.
+    ///
+    /// A managed tooltip only hides on its trigger's hover-leave, which never
+    /// arrives when the trigger is removed from the tree while hovered; callers
+    /// that remove a trigger (a view switch, a closing menu) dismiss it here.
+    pub fn hide_tooltip(window: &Window, cx: &mut App) {
+        if let Some(overlay) = Self::tooltip_overlay(window, cx) {
+            overlay.update(cx, |overlay, cx| overlay.hide(cx));
+        }
+    }
+
+    /// Show a managed tooltip in this window at once, anchored to `trigger_bounds` (in this
+    /// window's coordinates), for a trigger that lives in a child window over it and so never
+    /// reports its hover here. The caller owns the delay; dismiss it with [`Root::hide_tooltip`].
+    pub fn show_tooltip_for_bounds(
+        window: &Window,
+        cx: &mut App,
+        trigger_bounds: Bounds<Pixels>,
+        placement: ManagedTooltipPlacement,
+        build: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
+    ) {
+        if let Some(overlay) = Self::tooltip_overlay(window, cx) {
+            overlay.update(cx, |overlay, cx| {
+                overlay.show_now(trigger_bounds, placement, Rc::new(build), cx)
+            });
+        }
     }
 }
 
