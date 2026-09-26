@@ -2,10 +2,10 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AccessibleAction, AnyElement, App, DefiniteLength, Edges, ElementId, Entity, Hsla,
-    InteractiveElement as _, IntoElement, ParentElement as _, Rems, RenderOnce, Role, SharedString,
-    StatefulInteractiveElement as _, StyleRefinement, Styled, TextAlign, TouchPhase, Window, div,
-    px, relative,
+    AbsoluteLength, AccessibleAction, AnyElement, App, DefiniteLength, Edges, ElementId, Entity,
+    Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Rems, RenderOnce, Role,
+    SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled, TextAlign, TouchPhase,
+    Window, div, px, relative,
 };
 
 use crate::button::{Button, ButtonRounded, ButtonVariants as _};
@@ -573,7 +573,7 @@ impl Styled for Input {
 }
 
 impl RenderOnce for Input {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         const LINE_HEIGHT: Rems = Rems(1.25);
         let text_align = self.style.text.text_align.unwrap_or(TextAlign::Left);
         let state = self.state.clone();
@@ -628,17 +628,36 @@ impl RenderOnce for Input {
             },
             cx,
         );
+        // A multi-line input pads inside its scrolling editor rather than on
+        // the frame, so a padding the host puts on the control moves into the
+        // editor: `.p_0()` or `.px(..)` keep their meaning instead of adding to
+        // (or failing to remove) the editor's own padding.
+        let multi_line = state.presentation(cx).is_multi_line();
+        let host_padding = if multi_line {
+            std::mem::take(&mut self.style.padding)
+        } else {
+            Default::default()
+        };
+        let rem_size = window.rem_size();
+        let side = |host: Option<DefiniteLength>, default: gpui::Pixels| {
+            host.map_or(default, |length| {
+                length.to_pixels(AbsoluteLength::Pixels(px(0.)), rem_size)
+            })
+        };
         state.set_editor_paddings(
-            if state.presentation(cx).is_multi_line() {
+            if multi_line {
                 Edges {
-                    top: self.size.input_py(),
-                    right: self.size.input_px(),
-                    bottom: self.size.input_py(),
-                    left: if state.presentation(cx).is_code_editor() {
-                        self.size.input_px().min(px(6.))
-                    } else {
-                        self.size.input_px()
-                    },
+                    top: side(host_padding.top, self.size.input_py()),
+                    right: side(host_padding.right, self.size.input_px()),
+                    bottom: side(host_padding.bottom, self.size.input_py()),
+                    left: side(
+                        host_padding.left,
+                        if state.presentation(cx).is_code_editor() {
+                            self.size.input_px().min(px(6.))
+                        } else {
+                            self.size.input_px()
+                        },
+                    ),
                 }
             } else {
                 Edges::default()
