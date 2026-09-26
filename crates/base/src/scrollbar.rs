@@ -926,6 +926,19 @@ impl Scrollbar {
         self
     }
 
+    /// Set the scrollbar track and thumb thickness.
+    ///
+    /// Custom thicknesses use the full track width without the default inset,
+    /// and a fully rounded thumb, in every state.
+    pub fn thickness(self, thickness: impl Into<Pixels>) -> Self {
+        let thickness = thickness.into();
+        self.styles(|styles| {
+            styles
+                .track(|track| track.width(thickness))
+                .thumb(|thumb| thumb.width(thickness).inset(px(0.)).radius(thickness / 2.))
+        })
+    }
+
     /// Set maximum frames per second for scrolling by drag. Default is 120 FPS.
     ///
     /// If you have very high CPU usage, consider reducing this value to improve performance.
