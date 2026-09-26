@@ -1,6 +1,7 @@
 mod document;
 mod format;
 mod inline;
+mod inline_code;
 mod inline_element;
 mod inline_flow;
 mod inline_object;

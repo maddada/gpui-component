@@ -1,8 +1,40 @@
 use std::sync::Arc;
 
-use gpui::{HighlightStyle, Hsla, Pixels, Rems, StyleRefinement, rems};
+use gpui::{HighlightStyle, Hsla, Pixels, Rems, SharedString, StyleRefinement, rems};
 
 use crate::ColorTokens;
+
+/// Typography and decoration for inline code drawn as a chip, independent of
+/// fenced blocks: its own typeface and size, padding at the span's two ends, a
+/// border and rounded corners, and optionally a swatch of the colour a span
+/// names.
+///
+/// A span that wraps is drawn as one chip broken across lines: only its first
+/// fragment carries the leading edge (and the swatch) and only its last the
+/// trailing one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InlineCodeStyle {
+    pub font_family: SharedString,
+    pub font_scale: f32,
+    pub padding_x: Pixels,
+    pub padding_y: Pixels,
+    pub border_width: Pixels,
+    pub radius: Pixels,
+    pub background: Hsla,
+    pub border_color: Hsla,
+    /// Draw a small square of the colour a span names (`#1d4ed8`, `#fff`)
+    /// before its text.
+    pub swatches: bool,
+    /// The colour this particular span named, filled in while laying it out.
+    pub swatch: Option<Hsla>,
+    /// Ring around the swatch, kept apart from the span's own border so a
+    /// colour named in running text can carry the ring without a code chip.
+    pub swatch_border_width: Pixels,
+    pub swatch_border_color: Hsla,
+    /// True when the span is ordinary prose that merely names a colour: it
+    /// keeps the paragraph's own typeface instead of the code one.
+    pub prose: bool,
+}
 
 /// TextViewStyle used to customize the style for [`super::TextView`].
 ///
@@ -33,6 +65,8 @@ pub struct TextViewStyle {
     list: StyleRefinement,
     list_marker: StyleRefinement,
     inline_code: HighlightStyle,
+    inline_code_style: Option<InlineCodeStyle>,
+    prose_swatch: Option<InlineCodeStyle>,
     default_cursor: bool,
     is_dark: bool,
 }
@@ -60,6 +94,8 @@ impl PartialEq for TextViewStyle {
             && self.list == other.list
             && self.list_marker == other.list_marker
             && self.inline_code == other.inline_code
+            && self.inline_code_style == other.inline_code_style
+            && self.prose_swatch == other.prose_swatch
             && self.default_cursor == other.default_cursor
             && self.is_dark == other.is_dark
     }
@@ -111,6 +147,8 @@ impl TextViewStyle {
                 background_color: Some(colors.accent),
                 ..Default::default()
             },
+            inline_code_style: None,
+            prose_swatch: None,
             default_cursor: false,
             is_dark,
         }
@@ -182,6 +220,23 @@ impl TextViewStyle {
     /// which keeps [`TextViewStyle::default`] usable without a theme.
     pub fn with_inline_code(mut self, style: HighlightStyle) -> Self {
         self.inline_code = style;
+        self
+    }
+
+    /// Draws inline code as a chip in its own typeface, with padding at the
+    /// span's ends, a border and rounded corners (see [`InlineCodeStyle`]),
+    /// instead of the highlight of [`Self::with_inline_code`].
+    pub fn with_inline_code_style(mut self, style: Option<InlineCodeStyle>) -> Self {
+        self.inline_code_style = style;
+        self
+    }
+
+    /// Draws a swatch before every hex colour written in running text (not in
+    /// a link), the way [`Self::with_inline_code_style`] draws one inside a
+    /// code span. Set `prose` on it, so the words keep the paragraph's
+    /// typeface.
+    pub fn with_prose_swatch(mut self, style: Option<InlineCodeStyle>) -> Self {
+        self.prose_swatch = style;
         self
     }
 
@@ -399,6 +454,16 @@ impl TextViewStyle {
     /// fallback in [`Self::inline_code_highlight`] applies.
     pub fn inline_code(&self) -> HighlightStyle {
         self.inline_code
+    }
+
+    /// The chip inline code is drawn as, when the host asked for one.
+    pub fn inline_code_style(&self) -> Option<&InlineCodeStyle> {
+        self.inline_code_style.as_ref()
+    }
+
+    /// The swatch drawn before a colour named in running text, when asked for.
+    pub fn prose_swatch(&self) -> Option<&InlineCodeStyle> {
+        self.prose_swatch.as_ref()
     }
 
     /// Whether the document keeps the plain arrow cursor; see

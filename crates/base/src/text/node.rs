@@ -7,14 +7,14 @@ use std::{
 use gpui::{
     AnyElement, App, DefiniteLength, Div, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla,
     Image, ImageFormat, ImageSource, InteractiveElement as _, IntoElement, IsZero as _, Length,
-    MouseButton, ObjectFit, Overflow, ParentElement, Pixels, Rems, ScrollHandle, SharedString, SharedUri,
-    StatefulInteractiveElement, StyleRefinement, Styled, StyledImage as _, WhiteSpace, Window, div,
-    img, prelude::FluentBuilder as _, px, relative, rems,
+    MouseButton, ObjectFit, Overflow, ParentElement, Pixels, Rems, ScrollHandle, SharedString,
+    SharedUri, StatefulInteractiveElement, StyleRefinement, Styled, StyledImage as _, WhiteSpace,
+    Window, div, img, prelude::FluentBuilder as _, px, relative, rems,
 };
 use markdown::mdast;
 
 use crate::{
-    Scrollbar, ScrollbarMode, ScrollbarThumbStyle, StyledExt, h_flex, v_flex,
+    Scrollbar, ScrollbarMode, ScrollbarThumbStyle, StyledExt, h_flex,
     scrollable_mask::horizontal_scroll_area,
     text::{
         CodeBlockActionsFn, CodeBlockHighlighterFn, CodeBlockWrapFn, LinkClickHandlerFn,
@@ -30,6 +30,7 @@ use crate::{
         text_view::{handle_link_click, is_claimed_secondary_click},
     },
     theme::ActiveTheme as _,
+    v_flex,
 };
 
 use super::{
@@ -1195,7 +1196,8 @@ impl Paragraph {
             let mut node_highlights = vec![];
             for (range, style) in &inline_node.marks {
                 let inner_range = (offset + range.start)..(offset + range.end);
-                let mut highlight = mark_highlight(style, node_cx, cx);
+                let mut highlight =
+                    mark_highlight(style, marked_text(&inline_node.text, range), node_cx, cx);
                 if let Some(link_mark) = style.link.clone() {
                     highlight.style.color = Some(node_cx.style.link());
                     highlight.style.underline = Some(gpui::UnderlineStyle {
@@ -1945,10 +1947,7 @@ impl CodeBlock {
                 } else {
                     Pixels::ZERO
                 };
-            body.whitespace_nowrap()
-                .min_w_full()
-                .w(width)
-                .child(code)
+            body.whitespace_nowrap().min_w_full().w(width).child(code)
         };
 
         let block = div()
@@ -2087,9 +2086,20 @@ impl PartialEq for NodeContext {
     }
 }
 
+/// The text a mark covers, or nothing when its range does not fit the text.
+fn marked_text<'a>(text: &'a str, range: &Range<usize>) -> &'a str {
+    text.get(range.clone()).unwrap_or_default()
+}
+
 /// The highlight a text mark renders with. The link decoration is applied by
-/// the caller, which also has to record the link range.
-fn mark_highlight(mark: &TextMark, node_cx: &NodeContext, cx: &App) -> InlineHighlight {
+/// the caller, which also has to record the link range. `marked` is the text
+/// the mark covers, which a code chip reads the colour it names from.
+fn mark_highlight(
+    mark: &TextMark,
+    marked: &str,
+    node_cx: &NodeContext,
+    cx: &App,
+) -> InlineHighlight {
     let mut highlight = HighlightStyle::default();
     if mark.bold {
         highlight.font_weight = Some(FontWeight::BOLD);
@@ -2110,9 +2120,30 @@ fn mark_highlight(mark: &TextMark, node_cx: &NodeContext, cx: &App) -> InlineHig
         });
     }
     let mut font_family = None;
+    let mut font_size_scale = None;
+    let mut chip = None;
     if mark.code {
-        highlight = highlight.highlight(node_cx.style.inline_code_highlight());
-        font_family = Some(cx.theme().tokens.typography.mono.clone());
+        match node_cx.style.inline_code_style().filter(|code| !code.prose) {
+            // A host's chip: its own typeface and size, and a box the flow
+            // paints, so no highlight background.
+            Some(code) => {
+                font_family = Some(code.font_family.clone());
+                font_size_scale = Some(code.font_scale);
+                let mut code = code.clone();
+                // A colour is short and never wraps, so a span that names
+                // one is always one whole fragment.
+                code.swatch = code
+                    .swatches
+                    .then(|| super::inline_code::swatch_color(marked))
+                    .flatten();
+                chip = Some(Arc::new(code));
+            }
+            None => {
+                highlight = highlight.highlight(node_cx.style.inline_code_highlight());
+                font_family = Some(cx.theme().tokens.typography.mono.clone());
+                font_size_scale = Some(0.875);
+            }
+        }
     }
     if let Some(color) = mark.highlight {
         highlight.background_color = Some(color);
@@ -2120,7 +2151,8 @@ fn mark_highlight(mark: &TextMark, node_cx: &NodeContext, cx: &App) -> InlineHig
     InlineHighlight {
         style: highlight,
         font_family,
-        font_size_scale: mark.code.then_some(0.875),
+        font_size_scale,
+        chip,
     }
 }
 
@@ -2142,7 +2174,7 @@ impl Paragraph {
                 .map(|(range, mark)| {
                     (
                         (offset + range.start)..(offset + range.end),
-                        mark_highlight(mark, node_cx, cx),
+                        mark_highlight(mark, marked_text(&inline_node.text, range), node_cx, cx),
                     )
                 })
                 .collect::<Vec<_>>();
@@ -2166,7 +2198,7 @@ impl Paragraph {
         let fades = node_cx.stream_fades(fade_key);
         let backgrounds = node_cx.range_backgrounds(fade_key);
 
-        if self.should_render_inline_flow() {
+        if self.should_render_inline_flow(node_cx) {
             return InlineFlow::new(
                 leaf_element_id(fade_key),
                 self.inline_flow_items(fade_key, fades, backgrounds, node_cx, cx),
@@ -2289,11 +2321,19 @@ impl Paragraph {
                                     );
                                 })
                                 .when_some(link_secondary_click.clone(), |this, secondary| {
-                                    this.on_mouse_down(MouseButton::Right, move |event, window, cx| {
-                                        crate::TextSelection::end(window, cx);
-                                        cx.stop_propagation();
-                                        secondary(&secondary_link.url, event.modifiers, window, cx);
-                                    })
+                                    this.on_mouse_down(
+                                        MouseButton::Right,
+                                        move |event, window, cx| {
+                                            crate::TextSelection::end(window, cx);
+                                            cx.stop_propagation();
+                                            secondary(
+                                                &secondary_link.url,
+                                                event.modifiers,
+                                                window,
+                                                cx,
+                                            );
+                                        },
+                                    )
                                 })
                         })
                         .into_any_element(),
@@ -2308,7 +2348,8 @@ impl Paragraph {
                 let mut node_highlights = vec![];
                 for (range, style) in &inline_node.marks {
                     let inner_range = (offset + range.start)..(offset + range.end);
-                    let mut highlight = mark_highlight(style, node_cx, cx);
+                    let mut highlight =
+                        mark_highlight(style, marked_text(&inline_node.text, range), node_cx, cx);
 
                     if let Some(mut link_mark) = style.link.clone() {
                         highlight.style.color = Some(node_cx.style.link());
@@ -2370,7 +2411,7 @@ impl Paragraph {
             .into_any_element()
     }
 
-    fn should_render_inline_flow(&self) -> bool {
+    fn should_render_inline_flow(&self, node_cx: &NodeContext) -> bool {
         let has_image = self.children.iter().any(|child| child.image.is_some());
         let has_text = self.children.iter().any(|child| !child.text.is_empty());
         self.children.iter().any(|child| child.custom.is_some())
@@ -2379,6 +2420,13 @@ impl Paragraph {
                 .children
                 .iter()
                 .any(|child| child.marks.iter().any(|(_, mark)| mark.code))
+            // A paragraph that names a colour needs the per-fragment flow,
+            // which is what can reserve the room a swatch is painted in.
+            || node_cx.style.prose_swatch().is_some()
+                && self
+                    .children
+                    .iter()
+                    .any(|child| !super::inline_code::hex_colors(&child.text).is_empty())
     }
 
     fn inline_flow_items(
@@ -2421,7 +2469,8 @@ impl Paragraph {
                 let mut object_style = HighlightStyle::default();
                 let mut object_link = None;
                 for (_, mark) in &inline_node.marks {
-                    object_style = object_style.highlight(mark_highlight(mark, node_cx, cx).style);
+                    object_style =
+                        object_style.highlight(mark_highlight(mark, "", node_cx, cx).style);
                     if let Some(link) = &mark.link {
                         object_link = Some(
                             link.identifier
@@ -2496,7 +2545,8 @@ impl Paragraph {
                 let mut node_highlights = vec![];
                 for (range, style) in &inline_node.marks {
                     let inner_range = (offset + range.start)..(offset + range.end);
-                    let mut highlight = mark_highlight(style, node_cx, cx);
+                    let mut highlight =
+                        mark_highlight(style, marked_text(&inline_node.text, range), node_cx, cx);
 
                     if let Some(mut link_mark) = style.link.clone() {
                         highlight.style.color = Some(node_cx.style.link());
@@ -2540,6 +2590,10 @@ impl Paragraph {
                 backgrounds,
                 reveal,
             });
+        }
+
+        if let Some(prose) = node_cx.style.prose_swatch() {
+            super::inline_code::add_prose_swatches(&mut items, prose);
         }
 
         items
@@ -2610,9 +2664,7 @@ fn table_cell_insets(style: &TextViewStyle, rem_size: Pixels) -> (f32, f32) {
         .table_cell()
         .border_widths
         .right
-        .map_or(CELL_BORDER_PX, |width| {
-            f32::from(width.to_pixels(rem_size))
-        });
+        .map_or(CELL_BORDER_PX, |width| f32::from(width.to_pixels(rem_size)));
     (
         length(padding.left, CELL_PAD_PX) + length(padding.right, CELL_PAD_PX),
         border,
@@ -2642,16 +2694,26 @@ fn measure_table_columns(
     let (cell_pad, cell_border) = table_cell_insets(&node_cx.style, window.rem_size());
     let mut col_w = vec![CELL_MIN_PX; col_count];
     for (row_ix, row) in table.children.iter().enumerate() {
-        let text_style = if row_ix == 0 { &head_style } else { &body_style };
+        let text_style = if row_ix == 0 {
+            &head_style
+        } else {
+            &body_style
+        };
         for (ix, cell) in row.children.iter().enumerate() {
             let Some(slot) = col_w.get_mut(ix) else {
                 continue;
             };
-            if cell
-                .children
-                .children
-                .iter()
-                .any(|node| node.custom.is_some())
+            // A cell laid out as a flow with a host's chips or swatches is
+            // measured by the flow itself, since only it knows their edges.
+            let chips = (node_cx.style.inline_code_style().is_some()
+                || node_cx.style.prose_swatch().is_some())
+                && cell.children.should_render_inline_flow(node_cx);
+            if chips
+                || cell
+                    .children
+                    .children
+                    .iter()
+                    .any(|node| node.custom.is_some())
             {
                 let items = cell.children.inline_flow_items(None, &[], &[], node_cx, cx);
                 let width = super::inline_flow::intrinsic_width(&items, window, cx);
@@ -2723,10 +2785,7 @@ const TABLE_SCROLLBAR_GAP: Pixels = px(3.);
 /// is over the table. It draws nothing while the table fits.
 fn table_scrollbar(id: ElementId, scroll_handle: &ScrollHandle, thickness: Pixels) -> Div {
     let thumb = move |style: ScrollbarThumbStyle| {
-        style
-            .width(thickness)
-            .inset(px(0.))
-            .radius(thickness / 2.)
+        style.width(thickness).inset(px(0.)).radius(thickness / 2.)
     };
     div()
         .relative()
@@ -3258,8 +3317,8 @@ impl BlockNode {
         // Nowrap cells (via the `table_cell` refinement, which cascades to
         // the cell text) must never shrink below their single-line content,
         // so their floor is the content width itself.
-        let nowrap = cap.is_none()
-            && style.table_cell().text.white_space == Some(WhiteSpace::Nowrap);
+        let nowrap =
+            cap.is_none() && style.table_cell().text.white_space == Some(WhiteSpace::Nowrap);
         let clip = cap.is_some() && !style.table_wrap_cells();
         let col_min_w: Vec<f32> = if nowrap || cap.is_some() {
             col_w.clone()
@@ -3335,7 +3394,9 @@ impl BlockNode {
                             this.border_r_1().border_color(style.border())
                         })
                         .refine_style(&style.table_cell())
-                        .when(row_ix == 0, |this| this.refine_style(style.table_head_cell()))
+                        .when(row_ix == 0, |this| {
+                            this.refine_style(style.table_head_cell())
+                        })
                         .child(cell.children.render(fade_key, node_cx, window, cx)),
                 );
             }
@@ -3450,7 +3511,9 @@ impl BlockNode {
                             this.border_r_1().border_color(style.border())
                         })
                         .refine_style(&style.table_cell())
-                        .when(row_ix == 0, |this| this.refine_style(style.table_head_cell()))
+                        .when(row_ix == 0, |this| {
+                            this.refine_style(style.table_head_cell())
+                        })
                         .child(cell.children.render(fade_key, node_cx, window, cx)),
                 );
             }

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use gpui::{HighlightStyle, Pixels, Rems, StyleRefinement, px, rems};
 
 use crate::highlighter::HighlightTheme;
+use gpui_base::text::InlineCodeStyle;
 
 /// TextViewStyle used to customize the style for [`super::TextView`].
 ///
@@ -85,6 +86,14 @@ pub struct TextViewStyle {
     /// Default is [`HighlightStyle::default()`], the `background_color` will
     /// fallback to `cx.theme().accent`, if it is `None`.
     pub inline_code: HighlightStyle,
+    /// Draw inline code as a chip (its own typeface, padding at the span's
+    /// ends, a border, rounded corners, an optional colour swatch) instead of
+    /// the `inline_code` highlight.
+    pub inline_code_style: Option<InlineCodeStyle>,
+    /// Draw a swatch before every hex colour written in running text (not in a
+    /// link), the way `inline_code_style` draws one inside a code span. Set
+    /// `prose` on it.
+    pub prose_swatch: Option<InlineCodeStyle>,
     /// Leave the mouse cursor alone over this document: no I-beam over
     /// selectable text, no pointing hand over a link, a decorated reference or
     /// a linked image. Selection, link clicks and the link context menu are
@@ -117,6 +126,8 @@ impl Default for TextViewStyle {
             list: StyleRefinement::default(),
             list_marker: StyleRefinement::default(),
             inline_code: HighlightStyle::default(),
+            inline_code_style: None,
+            prose_swatch: None,
             default_cursor: false,
             is_dark: false,
         }
@@ -151,6 +162,8 @@ impl PartialEq for TextViewStyle {
             && self.list == other.list
             && self.list_marker == other.list_marker
             && self.inline_code == other.inline_code
+            && self.inline_code_style == other.inline_code_style
+            && self.prose_swatch == other.prose_swatch
             && self.default_cursor == other.default_cursor
             && self.is_dark == other.is_dark
     }

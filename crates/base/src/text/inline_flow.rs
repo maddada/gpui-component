@@ -9,9 +9,10 @@ use unicode_segmentation::UnicodeSegmentation as _;
 use gpui::{
     AbsoluteLength, AnyElement, App, AvailableSpace, Bounds, DefiniteLength, Element, ElementId,
     GlobalElementId, Hsla, ImageSource, InspectorElementId, InteractiveElement as _, IntoElement,
-    LayoutId, LineFragment as WrapLineFragment, MouseButton, ObjectFit, Pixels, Refineable as _, ShapedLine,
-    SharedString, Size, StatefulInteractiveElement as _, Styled, StyledImage as _, TextRun,
-    TextStyle, WhiteSpace, Window, img, point, prelude::FluentBuilder as _, px, relative, size,
+    LayoutId, LineFragment as WrapLineFragment, MouseButton, ObjectFit, Pixels, Refineable as _,
+    ShapedLine, SharedString, Size, StatefulInteractiveElement as _, Styled, StyledImage as _,
+    TextRun, TextStyle, WhiteSpace, Window, img, point, prelude::FluentBuilder as _, px, relative,
+    size,
 };
 
 use crate::text::text_view::{
@@ -19,7 +20,7 @@ use crate::text::text_view::{
 };
 
 use super::{
-    inline::{Inline, InlineHighlight, InlineState, text_runs, text_size_ranges},
+    inline::{Inline, InlineHighlight, InlineState, text_runs},
     inline_object::{InlineObject, MeasuredInlineObject},
     node::LinkMark,
     range_highlight::RevealAt,
@@ -200,12 +201,38 @@ enum PositionedFragment {
         selection_bounds: Bounds<Pixels>,
         /// The rounded box behind a code span, relative to the flow.
         code_background: Option<(Bounds<Pixels>, Hsla)>,
+        /// The piece of a host's chip this fragment carries, its box relative
+        /// to the flow.
+        chip: Option<FragmentChip>,
     },
     Image {
         item_ix: usize,
         origin: gpui::Point<Pixels>,
         size: Size<Pixels>,
     },
+}
+
+/// One wrapped fragment of a host's inline-code chip
+/// ([`InlineCodeStyle`](super::InlineCodeStyle)): which end of the span it
+/// carries, the room those ends take around its text, and its box.
+#[derive(Clone)]
+struct FragmentChip {
+    style: Arc<super::InlineCodeStyle>,
+    first: bool,
+    last: bool,
+    left: Pixels,
+    right: Pixels,
+    font_height: Pixels,
+    bounds: Bounds<Pixels>,
+}
+
+/// A laid-out fragment ready to paint.
+pub(crate) struct PrepaintedFragment {
+    element: AnyElement,
+    /// Upstream's inline-code background, in window coordinates.
+    background: Option<(Bounds<Pixels>, Hsla)>,
+    /// A host's chip piece, its box in window coordinates.
+    chip: Option<FragmentChip>,
 }
 
 enum MeasureItem {
@@ -244,6 +271,8 @@ enum LineFragmentKind {
         highlights: Vec<(Range<usize>, InlineHighlight)>,
         /// The code span's box, relative to the fragment.
         code_background: Option<(Bounds<Pixels>, Hsla)>,
+        /// A host's chip piece, its box relative to the fragment.
+        chip: Option<FragmentChip>,
     },
     Image,
 }
@@ -265,7 +294,10 @@ impl InlineFlow {
 
     /// A secondary (right) press on a linked image; see
     /// [`TextView::on_link_secondary_click`](super::TextView::on_link_secondary_click).
-    pub(super) fn link_secondary_click(mut self, handler: Option<Arc<LinkSecondaryClickFn>>) -> Self {
+    pub(super) fn link_secondary_click(
+        mut self,
+        handler: Option<Arc<LinkSecondaryClickFn>>,
+    ) -> Self {
         self.link_secondary_click = handler;
         self
     }
@@ -345,7 +377,7 @@ impl IntoElement for InlineFlow {
 
 impl Element for InlineFlow {
     type RequestLayoutState = InlineFlowLayoutState;
-    type PrepaintState = Vec<(AnyElement, Option<(Bounds<Pixels>, gpui::Hsla)>)>;
+    type PrepaintState = Vec<PrepaintedFragment>;
 
     fn id(&self) -> Option<ElementId> {
         Some(self.id.clone())
@@ -546,7 +578,11 @@ impl Element for InlineFlow {
                         window,
                         cx,
                     );
-                    elements.push((element, None));
+                    elements.push(PrepaintedFragment {
+                        element,
+                        background: None,
+                        chip: None,
+                    });
                 }
                 PositionedFragment::Text {
                     item_ix,
@@ -559,6 +595,7 @@ impl Element for InlineFlow {
                     highlights,
                     selection_bounds,
                     code_background,
+                    chip,
                 } => {
                     let InlineFlowItem::Text {
                         state: source_state,
@@ -576,12 +613,25 @@ impl Element for InlineFlow {
                         state.set_text(text.clone());
                     }
 
-                    let is_code = highlights.iter().any(|(_, h)| h.font_size_scale.is_some());
-                    let padding = if is_code {
-                        px(INLINE_CODE_PADDING)
-                    } else {
-                        Pixels::ZERO
+                    // The room around the text: a host's chip ends, or
+                    // upstream's inline-code padding on both sides.
+                    let (left, right) = match chip {
+                        Some(chip) => (chip.left, chip.right),
+                        None => {
+                            let is_code = highlights.iter().any(|(_, h)| h.is_plain_code());
+                            let padding = if is_code {
+                                px(INLINE_CODE_PADDING)
+                            } else {
+                                Pixels::ZERO
+                            };
+                            (padding, padding)
+                        }
                     };
+                    let chip = chip.clone().map(|mut chip| {
+                        chip.bounds =
+                            Bounds::new(bounds.origin + chip.bounds.origin, chip.bounds.size);
+                        chip
+                    });
                     let background = code_background.map(|(background, color)| {
                         (
                             Bounds::new(bounds.origin + background.origin, background.size),
@@ -619,7 +669,7 @@ impl Element for InlineFlow {
                         point(bounds.left(), bounds.top() + selection_bounds.top()),
                         size(bounds.size.width, selection_bounds.size.height),
                     ))
-                    .paint_origin(bounds.origin + origin + point(padding, Pixels::ZERO))
+                    .paint_origin(bounds.origin + origin + point(left, Pixels::ZERO))
                     .into_any_element();
                     // The `Inline` is its own layout root, with no box around
                     // it: its text measures with the window's text style, so
@@ -629,10 +679,10 @@ impl Element for InlineFlow {
                             Some(fragment_style.subtract(&Default::default())),
                             |window| {
                                 element.prepaint_as_root(
-                                    bounds.origin + origin + point(padding, Pixels::ZERO),
+                                    bounds.origin + origin + point(left, Pixels::ZERO),
                                     size(
                                         AvailableSpace::Definite(
-                                            fragment_size.width - padding * 2.,
+                                            fragment_size.width - left - right,
                                         ),
                                         AvailableSpace::Definite(fragment_size.height),
                                     ),
@@ -642,7 +692,11 @@ impl Element for InlineFlow {
                             },
                         );
                     });
-                    elements.push((element, background));
+                    elements.push(PrepaintedFragment {
+                        element,
+                        background,
+                        chip,
+                    });
                 }
                 PositionedFragment::Image {
                     item_ix,
@@ -678,7 +732,11 @@ impl Element for InlineFlow {
                         window,
                         cx,
                     );
-                    elements.push((element, None));
+                    elements.push(PrepaintedFragment {
+                        element,
+                        background: None,
+                        chip: None,
+                    });
                 }
             }
         }
@@ -713,11 +771,21 @@ impl Element for InlineFlow {
             }
         }
         let radius = crate::Theme::global(cx).tokens.radius.sm;
-        for (element, background) in prepaint {
-            if let Some((bounds, color)) = background {
-                window.paint_quad(gpui::fill(*bounds, *color).corner_radii(radius));
+        for fragment in prepaint {
+            if let Some((bounds, color)) = fragment.background {
+                window.paint_quad(gpui::fill(bounds, color).corner_radii(radius));
             }
-            element.paint(window, cx);
+            if let Some(chip) = &fragment.chip {
+                super::inline_code::paint_chip(
+                    chip.bounds,
+                    &chip.style,
+                    chip.first,
+                    chip.last,
+                    chip.font_height,
+                    window,
+                );
+            }
+            fragment.element.paint(window, cx);
         }
     }
 }
@@ -966,7 +1034,8 @@ fn layout_measured_flow(
                 } => {
                     let local_start = line_range.start.max(item_start) - item_start;
                     let local_end = line_range.end.min(item_end) - item_start;
-                    for (segment, scale) in text_size_ranges(text.len(), highlights) {
+                    let chip_spans = chip_spans(highlights);
+                    for (segment, scale, chip) in flow_segments(text.len(), highlights) {
                         let start = local_start.max(segment.start);
                         let end = local_end.min(segment.end);
                         if start >= end {
@@ -983,13 +1052,43 @@ fn layout_measured_flow(
                         let segment_font_size = font_size * scale;
                         let shaped_line =
                             shape_line(subtext.clone(), segment_font_size, &runs, window);
-                        let is_code = highlights.iter().any(|(_, h)| h.font_size_scale.is_some());
+                        let is_code =
+                            chip.is_none() && highlights.iter().any(|(_, h)| h.is_plain_code());
                         let padding = if is_code {
                             px(INLINE_CODE_PADDING * 2.)
                         } else {
                             Pixels::ZERO
                         };
-                        let width = shaped_line.width() + padding;
+                        // A host's chip pads only the span's two ends, so a
+                        // span broken across lines reads as one chip.
+                        let chip = chip.map(|chip| {
+                            let span = chip_spans
+                                .iter()
+                                .find(|(span, style)| {
+                                    Arc::ptr_eq(style, &chip) && span.contains(&start)
+                                })
+                                .map_or(segment.clone(), |(span, _)| span.clone());
+                            let first = start == span.start;
+                            let last = end == span.end;
+                            let font_height =
+                                super::inline_code::chip_font_height(text_style, &chip, window);
+                            let (left, right) =
+                                super::inline_code::chip_edges(&chip, first, last, font_height);
+                            FragmentChip {
+                                style: chip,
+                                first,
+                                last,
+                                left,
+                                right,
+                                font_height,
+                                bounds: Bounds::default(),
+                            }
+                        });
+                        let width = shaped_line.width()
+                            + padding
+                            + chip
+                                .as_ref()
+                                .map_or(Pixels::ZERO, |chip| chip.left + chip.right);
                         // Measure the run by its glyph box. The body strut already
                         // carries the line's leading, so a run only has to fit its
                         // glyphs: leading of its own would make a smaller or
@@ -999,6 +1098,16 @@ fn layout_measured_flow(
                         // painted independently.
                         let glyph_size = size(width, shaped_line.ascent + shaped_line.descent);
                         let baseline = shaped_line.ascent;
+                        let chip = chip.map(|mut chip| {
+                            chip.bounds = super::inline_code::chip_box(
+                                &chip.style,
+                                width,
+                                baseline,
+                                shaped_line.ascent,
+                                shaped_line.descent,
+                            );
+                            chip
+                        });
                         let code_background = is_code
                             .then(|| {
                                 code_background(
@@ -1024,6 +1133,7 @@ fn layout_measured_flow(
                                 links,
                                 highlights,
                                 code_background,
+                                chip,
                             },
                             size: glyph_size,
                             source_range: start..end,
@@ -1102,6 +1212,7 @@ fn layout_measured_flow(
                     links,
                     highlights,
                     code_background,
+                    chip,
                 } => PositionedFragment::Text {
                     item_ix: fragment.item_ix,
                     origin,
@@ -1120,6 +1231,13 @@ fn layout_measured_flow(
                             ),
                             color,
                         )
+                    }),
+                    chip: chip.map(|mut chip| {
+                        chip.bounds = Bounds::new(
+                            origin + point(Pixels::ZERO, leading) + chip.bounds.origin,
+                            chip.bounds.size,
+                        );
+                        chip
                     }),
                 },
                 LineFragmentKind::Image => PositionedFragment::Image {
@@ -1141,6 +1259,72 @@ fn layout_measured_flow(
         size: size(max_width, y),
         wrap_width,
     }
+}
+
+/// Splits an item's text into the ranges one fragment of a line is shaped
+/// from: one font size (GPUI runs can vary the font but not its size), and
+/// one host chip, whose ends pad the fragment.
+fn flow_segments(
+    text_len: usize,
+    highlights: &[(Range<usize>, InlineHighlight)],
+) -> Vec<(Range<usize>, f32, Option<Arc<super::InlineCodeStyle>>)> {
+    fn same_chip(
+        left: &Option<Arc<super::InlineCodeStyle>>,
+        right: &Option<Arc<super::InlineCodeStyle>>,
+    ) -> bool {
+        match (left, right) {
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+    let mut segments: Vec<(Range<usize>, f32, Option<Arc<super::InlineCodeStyle>>)> = Vec::new();
+    let mut push = |range: Range<usize>, scale: f32, chip: Option<Arc<super::InlineCodeStyle>>| {
+        if range.is_empty() {
+            return;
+        }
+        if let Some((last, last_scale, last_chip)) = segments.last_mut()
+            && *last_scale == scale
+            && same_chip(last_chip, &chip)
+            && last.end == range.start
+        {
+            last.end = range.end;
+        } else {
+            segments.push((range, scale, chip));
+        }
+    };
+    let mut cursor = 0;
+    for (range, highlight) in highlights {
+        push(cursor..range.start, 1., None);
+        push(
+            range.clone(),
+            highlight.font_size_scale.unwrap_or(1.),
+            highlight.chip.clone(),
+        );
+        cursor = range.end;
+    }
+    push(cursor..text_len, 1., None);
+    segments
+}
+
+/// Every host chip span in an item: the highlights sharing one chip,
+/// joined where they touch (a streamed fade cuts one span into several).
+fn chip_spans(
+    highlights: &[(Range<usize>, InlineHighlight)],
+) -> Vec<(Range<usize>, Arc<super::InlineCodeStyle>)> {
+    let mut spans: Vec<(Range<usize>, Arc<super::InlineCodeStyle>)> = Vec::new();
+    for (range, highlight) in highlights {
+        let Some(chip) = &highlight.chip else {
+            continue;
+        };
+        match spans.last_mut() {
+            Some((span, style)) if Arc::ptr_eq(style, chip) && span.end == range.start => {
+                span.end = range.end;
+            }
+            _ => spans.push((range.clone(), chip.clone())),
+        }
+    }
+    spans
 }
 
 /// The rounded box behind a code span, relative to the fragment: centered on
@@ -1288,6 +1472,10 @@ fn line_ranges(
 /// another family is shaped with the same run the renderer uses and enters
 /// the wrapper as measured elements. Oversized spans retain word boundaries;
 /// oversized words can break at grapheme boundaries without splitting Unicode.
+///
+/// A host's chip enters the same way, one element per word, with the span's
+/// padding (and swatch) added to its first and last words, since those are
+/// the widths the flow lays it out at.
 fn push_text_wrap_fragments<'a>(
     fragments: &mut Vec<WrapLineFragment<'a>>,
     text: &'a str,
@@ -1297,9 +1485,59 @@ fn push_text_wrap_fragments<'a>(
     wrap_width: Pixels,
     window: &mut Window,
 ) {
+    let window: &Window = window;
     let font_size = text_style.font_size.to_pixels(window.rem_size());
+    let spans = chip_spans(highlights);
     let mut cursor = range.start;
-    for (highlight_range, highlight) in highlights {
+    let mut ix = 0;
+    while ix < highlights.len() {
+        let (highlight_range, highlight) = &highlights[ix];
+        ix += 1;
+        if let Some(chip) = &highlight.chip {
+            let span = spans
+                .iter()
+                .find(|(span, style)| {
+                    Arc::ptr_eq(style, chip) && span.contains(&highlight_range.start)
+                })
+                .map_or(highlight_range.clone(), |(span, _)| span.clone());
+            // The rest of the span's highlights are the same chip.
+            while ix < highlights.len() && highlights[ix].0.start < span.end {
+                ix += 1;
+            }
+            let start = span.start.max(cursor);
+            let end = span.end.min(range.end);
+            if start >= end {
+                continue;
+            }
+            if cursor < start {
+                fragments.push(WrapLineFragment::text(&text[cursor..start]));
+            }
+            let scale = highlight.font_size_scale.unwrap_or(1.);
+            let mut measure = |text: &str| {
+                let runs = text_runs(
+                    text.len(),
+                    text_style,
+                    &[(0..text.len(), highlight.clone())],
+                );
+                window
+                    .text_system()
+                    .layout_line(text, font_size * scale, &runs, None)
+                    .width
+            };
+            super::inline_code::push_wrap_fragments(
+                fragments,
+                text,
+                start..end,
+                span,
+                chip,
+                text_style,
+                &mut measure,
+                wrap_width,
+                window,
+            );
+            cursor = end;
+            continue;
+        }
         if highlight.font_family.is_none() {
             continue;
         }

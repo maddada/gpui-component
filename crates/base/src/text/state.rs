@@ -23,8 +23,8 @@ use crate::{
     input::{self, SelectAll},
     text::{
         CodeBlockActionsFn, CodeBlockHighlighterFn, CodeBlockWrapFn, LinkClickHandlerFn,
-        MarkdownExtensions,
-        RangeHighlight, RangeHighlightError, RenderedText, TableActionsFn, TextViewStyle,
+        MarkdownExtensions, RangeHighlight, RangeHighlightError, RenderedText, TableActionsFn,
+        TextViewStyle,
         document::ParsedDocument,
         format,
         node::{self, NodeContext},
@@ -119,8 +119,7 @@ pub struct TextViewState {
     pub(super) table_actions: Option<std::sync::Arc<TableActionsFn>>,
     pub(super) image_source: Option<std::sync::Arc<super::text_view::ImageSourceFn>>,
     pub(super) link_click_handler: Option<std::sync::Arc<LinkClickHandlerFn>>,
-    pub(super) link_secondary_click:
-        Option<std::sync::Arc<super::text_view::LinkSecondaryClickFn>>,
+    pub(super) link_secondary_click: Option<std::sync::Arc<super::text_view::LinkSecondaryClickFn>>,
     pub(super) markdown_extensions: Arc<MarkdownExtensions>,
 
     pub(super) is_selecting: bool,

@@ -275,9 +275,8 @@ impl Element for TextView {
                 &style.highlight_theme,
                 &crate::highlighter::HighlightTheme::default_light(),
             ) {
-                inner = inner.shared_code_block_highlighter(shared_highlighter(
-                    &style.highlight_theme,
-                ));
+                inner =
+                    inner.shared_code_block_highlighter(shared_highlighter(&style.highlight_theme));
             }
             inner = inner.style(resolve_component_style(
                 crate::ActiveTheme::theme(cx),
@@ -439,6 +438,8 @@ pub(super) fn resolve_component_style(
         .with_list(legacy.list)
         .with_list_marker(legacy.list_marker)
         .with_inline_code(inline_code)
+        .with_inline_code_style(legacy.inline_code_style)
+        .with_prose_swatch(legacy.prose_swatch)
         .with_default_cursor(legacy.default_cursor)
         .with_dark(is_dark);
     style

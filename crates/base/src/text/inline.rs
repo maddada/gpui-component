@@ -37,6 +37,12 @@ pub(super) struct InlineHighlight {
     pub(super) style: HighlightStyle,
     pub(super) font_family: Option<SharedString>,
     pub(super) font_size_scale: Option<f32>,
+    /// The chip a host draws this span in
+    /// ([`TextViewStyle::inline_code_style`](super::TextViewStyle::inline_code_style)
+    /// or [`TextViewStyle::prose_swatch`](super::TextViewStyle::prose_swatch)).
+    /// One span shares one allocation, which is how its wrapped fragments
+    /// tell where the span starts and ends.
+    pub(super) chip: Option<Arc<super::InlineCodeStyle>>,
 }
 
 impl InlineHighlight {
@@ -49,7 +55,16 @@ impl InlineHighlight {
         if other.font_size_scale.is_some() {
             self.font_size_scale = other.font_size_scale;
         }
+        if other.chip.is_some() {
+            self.chip = other.chip.clone();
+        }
         self
+    }
+
+    /// Whether this is inline code in upstream's own look: a highlighted
+    /// background with a little padding, rather than a host's chip.
+    pub(super) fn is_plain_code(&self) -> bool {
+        self.font_size_scale.is_some() && self.chip.is_none()
     }
 }
 
@@ -59,6 +74,7 @@ impl From<HighlightStyle> for InlineHighlight {
             style,
             font_family: None,
             font_size_scale: None,
+            chip: None,
         }
     }
 }
