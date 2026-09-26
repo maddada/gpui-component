@@ -172,6 +172,37 @@ impl<M: InputModeKind> InputBaseState<M> {
         (new_offset, new_affinity)
     }
 
+    /// Where a vertical move that has no row left to go to lands instead: Up on
+    /// the first display row goes to the start of the text and Down on the last
+    /// one to its end, as in macOS text views, VS Code and terminal line
+    /// editors. `None` when the move changes rows.
+    fn vertical_edge_target(
+        &self,
+        offset: usize,
+        line_end_affinity: bool,
+        move_lines: isize,
+    ) -> Option<usize> {
+        if move_lines == 0 {
+            return None;
+        }
+        let wrap_row = self
+            .display_map
+            .offset_to_wrap_display_point_with_affinity(offset, line_end_affinity)
+            .row;
+        let display_row = self
+            .display_map
+            .wrap_row_to_display_row(wrap_row)
+            .unwrap_or_else(|| self.display_map.nearest_visible_display_row(wrap_row));
+        let max_display_row = self.display_map.display_row_count().saturating_sub(1);
+        if move_lines < 0 && display_row == 0 {
+            Some(0)
+        } else if move_lines > 0 && display_row >= max_display_row {
+            Some(self.text.len())
+        } else {
+            None
+        }
+    }
+
     /// Move every cursor through `f`, which maps each selection to a
     /// `(new_offset, column_anchor, line_end_affinity)`, collapsing each to a
     /// cursor. Overlapping cursors are merged, then the standard post-move
@@ -248,6 +279,9 @@ impl<M: InputModeKind> InputBaseState<M> {
                     let e = s.next_boundary(sel.end.saturating_sub(1));
                     (e, s.preferred_column_for(e), false)
                 };
+                if let Some(offset) = s.vertical_edge_target(effective, affinity, move_lines) {
+                    return (offset, anchor, false);
+                }
                 let (offset, affinity) = s.vertical_target(effective, anchor, affinity, move_lines);
                 (offset, anchor, affinity)
             },
