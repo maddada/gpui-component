@@ -6,6 +6,7 @@ mod inline_element;
 mod inline_flow;
 mod inline_link;
 mod inline_object;
+mod inline_prose;
 #[cfg(test)]
 mod inline_virtual_tests;
 mod markdown_ext;

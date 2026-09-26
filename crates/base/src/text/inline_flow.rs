@@ -1615,7 +1615,8 @@ fn line_ranges(
 ///
 /// A host's chip enters the same way, one element per word, with the span's
 /// padding (and swatch) added to its first and last words, since those are
-/// the widths the flow lays it out at.
+/// the widths the flow lays it out at. So do the words of a bold or italic run
+/// (see [`super::inline_prose`]).
 fn push_text_wrap_fragments<'a>(
     fragments: &mut Vec<WrapLineFragment<'a>>,
     text: &'a str,
@@ -1679,6 +1680,28 @@ fn push_text_wrap_fragments<'a>(
             continue;
         }
         if highlight.font_family.is_none() {
+            // Bold or italic prose is wider than the body face the wrapper
+            // measures text in; its words enter as elements of their width.
+            if super::inline_prose::restyles_face(text_style, &highlight.style) {
+                let start = highlight_range.start.max(cursor);
+                let end = highlight_range.end.min(range.end);
+                if start < end {
+                    if cursor < start {
+                        fragments.push(WrapLineFragment::text(&text[cursor..start]));
+                    }
+                    super::inline_prose::push_wrap_fragments(
+                        fragments,
+                        text,
+                        start..end,
+                        &highlight.style,
+                        text_style,
+                        font_size,
+                        wrap_width,
+                        window,
+                    );
+                    cursor = end;
+                }
+            }
             continue;
         }
         let start = highlight_range.start.max(cursor);
