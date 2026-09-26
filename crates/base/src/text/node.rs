@@ -3330,7 +3330,7 @@ impl BlockNode {
         let mut col_w = measure_table_columns(table, col_count, node_cx, window, cx);
         let style = &node_cx.style;
         // A host's column cap (`table_cell_max_width`): no column grows past
-        // it, and none shrinks below its capped width either — the cells wrap
+        // it, and none shrinks below its capped width either: the cells wrap
         // inside it (`table_wrap_cells`) or clip on one line, and a table
         // wider than its frame scrolls, which is how a long row stays readable
         // in a narrow pane.

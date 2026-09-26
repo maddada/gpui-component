@@ -14,12 +14,12 @@ use gpui::{
 };
 
 use crate::text_boundary::{line_range_at, word_range_at};
-
-pub(crate) mod runs;
 use crate::touch_selection::{
     EdgeDrag, SelectionEdge, TouchHandle, TouchSelectionSnapshot, caret_in_view,
 };
 use crate::{AutoScroll, GlobalState};
+
+pub(crate) mod runs;
 
 /// An opaque selection layer identifier.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -1936,11 +1936,12 @@ impl WindowSelectionState {
         }
     }
 
-    /// Starts a selection of `TextView` text for a press at `position`, when
-    /// the press is over one or in blank space nearer to one than to any other
-    /// participant. `click_count` 2 selects the word and 3 the line under the
-    /// press, and a following drag extends by that unit. Returns `false` when
-    /// the press is for another participant.
+    /// Starts a selection of `TextView` text for a press at `position`: on a
+    /// run a `TextView` painted, or in blank space (proxied to the nearest run)
+    /// when no other participant is under the press. `click_count` 2 selects
+    /// the word and 3 the line under a press on text, and a following drag
+    /// extends by that unit. Returns `false` when the press is for another
+    /// participant, or no `TextView` painted any text.
     fn begin_runs(
         &mut self,
         position: Point<Pixels>,
