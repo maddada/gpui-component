@@ -818,6 +818,8 @@ pub struct Scrollbar {
     mode: Option<ScrollbarMode>,
     scroll_handle: Rc<dyn ScrollbarHandle>,
     scroll_size: Option<Size<Pixels>>,
+    /// See [`Scrollbar::shown_by_host_scroll`].
+    host_scroll_time: Option<Option<Instant>>,
     viewport_bounds: Option<Bounds<Pixels>>,
     use_layout_bounds: bool,
     /// Maximum frames per second for scrolling by drag. Default is 120 FPS.
@@ -842,6 +844,7 @@ impl Scrollbar {
             scroll_handle: Rc::new(scroll_handle.clone()),
             max_fps: 120,
             scroll_size: None,
+            host_scroll_time: None,
             viewport_bounds: None,
             use_layout_bounds: false,
             styles: ScrollbarStyles::default(),
@@ -881,6 +884,17 @@ impl Scrollbar {
     /// Default will sync the `content_size` from `scroll_handle`.
     pub fn scroll_size(mut self, scroll_size: Size<Pixels>) -> Self {
         self.scroll_size = Some(scroll_size);
+        self
+    }
+
+    /// Let the host say when the reader scrolled, instead of showing the bar on every offset change.
+    ///
+    /// An offset also moves when content grows under a list that follows its tail, which is not
+    /// the reader scrolling. With this set, an offset change alone moves the thumb without showing
+    /// it; the bar shows from `scrolled_at` (the host's last user scroll), from a wheel over the
+    /// bar's area, from the pointer being on it, and while it is dragged.
+    pub fn shown_by_host_scroll(mut self, scrolled_at: Option<Instant>) -> Self {
+        self.host_scroll_time = Some(scrolled_at);
         self
     }
 
@@ -1329,9 +1343,20 @@ impl Element for Scrollbar {
         };
 
         let mut inner = state.get();
+        if let Some(Some(scrolled_at)) = self.host_scroll_time
+            && inner.last_scroll_time.is_none_or(|t| t < scrolled_at)
+        {
+            inner.last_scroll_time = Some(scrolled_at);
+        }
         let current_offset = self.scroll_handle.offset();
         if current_offset != inner.last_scroll_offset {
-            inner = inner.with_last_scroll(current_offset, Some(now));
+            // With a host scroll time the offset moving is not by itself the reader scrolling.
+            let last_scroll_time = if self.host_scroll_time.is_some() {
+                inner.last_scroll_time
+            } else {
+                Some(now)
+            };
+            inner = inner.with_last_scroll(current_offset, last_scroll_time);
         }
 
         let is_hovered = inner.hovered_axis.is_some() || inner.hovered_on_thumb.is_some();
