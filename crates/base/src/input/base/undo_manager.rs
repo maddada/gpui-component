@@ -2,9 +2,12 @@ use super::auto_close::AutoClosedPairs;
 use crate::input::change::Change;
 
 use super::cursor::CursorSelection;
+use web_time::{Duration, Instant};
 
 const MAX_UNDO_TRANSACTIONS: usize = 1000;
 const MAX_CHANGES_PER_TRANSACTION: usize = 1000;
+/// A pause longer than this ends the current undo step, even mid-word.
+const PAUSE_BREAKS_TRANSACTION_AFTER: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum EditIntent {
@@ -28,6 +31,8 @@ struct UndoTransaction {
     selections_after: Option<Vec<CursorSelection>>,
     auto_closed_pairs_before: Option<AutoClosedPairs>,
     auto_closed_pairs_after: Option<AutoClosedPairs>,
+    /// When the most recent batch was appended, so a pause can end the step.
+    last_edit_at: Instant,
 }
 
 /// A batch of changes being collected between `begin_transaction` and the
@@ -182,13 +187,17 @@ impl UndoManager {
         }
 
         self.redo_transactions.clear();
+        let now = Instant::now();
         let can_coalesce = !self.coalescing_boundary
             && intent != EditIntent::Atomic
             && self.undo_transactions.last().is_some_and(|previous| {
                 previous.intent == intent
                     && previous.last_batch_len == changes.len()
                     && previous.changes.len() + changes.len() <= MAX_CHANGES_PER_TRANSACTION
+                    && now.saturating_duration_since(previous.last_edit_at)
+                        <= PAUSE_BREAKS_TRANSACTION_AFTER
                     && is_adjacent_batch(intent, previous.trailing_batch(), &changes)
+                    && !starts_new_word(intent, previous.trailing_batch(), &changes)
             });
 
         if can_coalesce {
@@ -198,6 +207,7 @@ impl UndoManager {
                 .expect("coalescing requires a previous transaction");
             previous.last_batch_len = changes.len();
             previous.changes.extend(changes);
+            previous.last_edit_at = now;
             return;
         }
 
@@ -212,6 +222,7 @@ impl UndoManager {
             selections_after: None,
             auto_closed_pairs_before: None,
             auto_closed_pairs_after: None,
+            last_edit_at: now,
         });
         self.coalescing_boundary = intent == EditIntent::Atomic;
     }
@@ -415,6 +426,29 @@ fn is_adjacent_batch(intent: EditIntent, previous: &[Change], current: &[Change]
         .zip(current)
         .zip(shifts)
         .all(|((previous, current), shift)| is_adjacent(intent, &previous.shifted(shift), current))
+}
+
+/// True when `current` types the first character of a new word after
+/// `previous` ended in whitespace, which is where a typing step ends.
+///
+/// CDXC:UndoRedo 2026-09-25 WHY: Coalescing on adjacency alone made one undo
+/// erase everything typed on a line (a whole prompt). Steps split at word
+/// starts and at pauses, the way text editors undo, so an undo takes back the
+/// last word rather than the whole message.
+fn starts_new_word(intent: EditIntent, previous: &[Change], current: &[Change]) -> bool {
+    intent == EditIntent::Typing
+        && previous.iter().zip(current).any(|(previous, current)| {
+            current
+                .new_text
+                .chars()
+                .next()
+                .is_some_and(|c| !c.is_whitespace())
+                && previous
+                    .new_text
+                    .chars()
+                    .last()
+                    .is_some_and(char::is_whitespace)
+        })
 }
 
 fn is_adjacent(intent: EditIntent, previous: &Change, current: &Change) -> bool {

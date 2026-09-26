@@ -289,6 +289,8 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("ctrl-z", Undo, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-y", Redo, Some(CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-shift-z", Redo, Some(CONTEXT)),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-.", ToggleCodeActions, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
@@ -6026,7 +6028,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn test_undo_manager_coalesces_long_unicode_typing_without_a_timer(cx: &mut TestAppContext) {
+    fn test_undo_manager_steps_long_unicode_typing_by_word(cx: &mut TestAppContext) {
         let input_view = InputView::build_textarea(cx, |state| state);
         let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
         let input = input_view.input;
@@ -6046,10 +6048,15 @@ mod tests {
                 }
                 assert_eq!(state.value(), expected);
 
-                state.undo(&Undo, window, cx);
-                assert_eq!(state.value(), "");
-                state.redo(&Redo, window, cx);
-                assert_eq!(state.value(), expected);
+                // Every part starts a new word, so each one is its own step.
+                for end in (0..parts.len()).rev() {
+                    state.undo(&Undo, window, cx);
+                    assert_eq!(state.value(), parts[..end].concat());
+                }
+                for end in 1..=parts.len() {
+                    state.redo(&Redo, window, cx);
+                    assert_eq!(state.value(), parts[..end].concat());
+                }
             });
         });
     }
@@ -6088,18 +6095,22 @@ mod tests {
                     state.value(),
                     "first line with punctuation!\n第二行包含 Unicode 🦀\nthird line has several words"
                 );
-                state.undo(&Undo, window, cx);
-                assert_eq!(
-                    state.value(),
-                    "first line with punctuation!\n第二行包含 Unicode 🦀\n"
-                );
-                state.undo(&Undo, window, cx);
-                assert_eq!(
-                    state.value(),
-                    "first line with punctuation!\n第二行包含 Unicode 🦀"
-                );
-                state.undo(&Undo, window, cx);
-                assert_eq!(state.value(), "first line with punctuation!\n");
+                // A typed word, a newline, and each following word are
+                // separate steps.
+                for expected in [
+                    "first line with punctuation!\n第二行包含 Unicode 🦀\nthird line has several ",
+                    "first line with punctuation!\n第二行包含 Unicode 🦀\nthird line has ",
+                    "first line with punctuation!\n第二行包含 Unicode 🦀\nthird line ",
+                    "first line with punctuation!\n第二行包含 Unicode 🦀\nthird ",
+                    "first line with punctuation!\n第二行包含 Unicode 🦀\n",
+                    "first line with punctuation!\n第二行包含 Unicode 🦀",
+                    "first line with punctuation!\n第二行包含 Unicode ",
+                    "first line with punctuation!\n第二行包含 ",
+                    "first line with punctuation!\n",
+                ] {
+                    state.undo(&Undo, window, cx);
+                    assert_eq!(state.value(), expected);
+                }
             });
         });
     }
