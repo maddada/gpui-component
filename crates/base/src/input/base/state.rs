@@ -2571,7 +2571,15 @@ impl<M: InputModeKind> InputBaseState<M> {
         // Clamp the deferred target into the same safe range that
         // `update_scroll_offset` enforces on persist, so paint never shows an
         // over-scrolled frame before the post-paint clamp pulls it back.
-        let safe_y_min = (-self.scroll_size.height + self.input_bounds.size.height).min(px(0.));
+        //
+        // CDXC:SessionChat 2026-09-21 WHY: The content height comes from the
+        // display map, which an edit updates at once, not only from
+        // `scroll_size`, which still describes the text before it. Clamping to
+        // the stale height after a long paste left the caret below the visible
+        // rows, and the deferred target then overrode the caret follow.
+        let content_height =
+            (line_height * self.display_map.display_row_count()).max(self.scroll_size.height);
+        let safe_y_min = (-content_height + self.input_bounds.size.height).min(px(0.));
         scroll_offset.x = scroll_offset.x.min(px(0.));
         scroll_offset.y = scroll_offset.y.clamp(safe_y_min, px(0.));
         self.deferred_scroll_offset = Some(scroll_offset);
