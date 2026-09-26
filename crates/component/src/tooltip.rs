@@ -287,11 +287,14 @@ pub trait ManagedTooltipExt: StatefulInteractiveElement + crate::ElementExt + Si
                 None => request,
             }
         };
+        let request = Rc::new(request);
 
         self.on_prepaint(move |bounds, _, _| {
             bounds_writer.set(bounds);
         })
         .on_hover({
+            let trigger_bounds_cell = trigger_bounds_cell.clone();
+            let request = request.clone();
             move |hovered, window, cx| {
                 if let Some(overlay) = Root::tooltip_overlay(window, cx) {
                     let bounds = trigger_bounds_cell.get();
@@ -309,7 +312,8 @@ pub trait ManagedTooltipExt: StatefulInteractiveElement + crate::ElementExt + Si
         })
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
             if let Some(overlay) = Root::tooltip_overlay(window, cx) {
-                overlay.update(cx, |overlay, cx| overlay.hide(cx));
+                let trigger = request(trigger_bounds_cell.get());
+                overlay.update(cx, |overlay, cx| overlay.press(trigger, cx));
             }
         })
     }
