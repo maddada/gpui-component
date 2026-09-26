@@ -47,6 +47,12 @@ pub struct TextViewStyle {
     /// Default is [`HighlightStyle::default()`], the `background_color` will
     /// fallback to `cx.theme().accent`, if it is `None`.
     pub inline_code: HighlightStyle,
+    /// Leave the mouse cursor alone over this document: no I-beam over
+    /// selectable text, no pointing hand over a link, a decorated reference or
+    /// a linked image. Selection, link clicks and the link context menu are
+    /// unaffected; only the cursor shape is. Default `false`, which keeps the
+    /// usual text and link cursors.
+    pub default_cursor: bool,
     /// Whether content-specific rendering should use dark-mode assets.
     pub is_dark: bool,
 }
@@ -63,6 +69,7 @@ impl Default for TextViewStyle {
             table_head: StyleRefinement::default(),
             table_cell: StyleRefinement::default(),
             inline_code: HighlightStyle::default(),
+            default_cursor: false,
             is_dark: false,
         }
     }
@@ -86,6 +93,7 @@ impl PartialEq for TextViewStyle {
             && self.table_head == other.table_head
             && self.table_cell == other.table_cell
             && self.inline_code == other.inline_code
+            && self.default_cursor == other.default_cursor
             && self.is_dark == other.is_dark
     }
 }
@@ -136,6 +144,14 @@ impl TextViewStyle {
     /// than the frame.
     pub fn table_cell(mut self, style: StyleRefinement) -> Self {
         self.table_cell = style;
+        self
+    }
+
+    /// Keep the plain arrow cursor over the whole document: over selectable
+    /// text, over links, over decorated references and over linked images.
+    /// Selection and clicks keep working; only the cursor shape changes.
+    pub fn default_cursor(mut self, default_cursor: bool) -> Self {
+        self.default_cursor = default_cursor;
         self
     }
 }

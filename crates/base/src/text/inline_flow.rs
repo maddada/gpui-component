@@ -30,6 +30,9 @@ pub(super) struct InlineFlow {
     id: ElementId,
     items: Vec<InlineFlowItem>,
     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+    /// [`TextViewStyle::default_cursor`](super::TextViewStyle::default_cursor):
+    /// keep the plain arrow over linked images instead of the pointing hand.
+    default_cursor: bool,
 }
 
 pub(super) type InlineRenderer = dyn Fn(&super::InlineRenderContext, &mut Window, &mut App) -> Option<super::InlineElement>
@@ -251,7 +254,14 @@ impl InlineFlow {
             id: id.into(),
             items,
             link_click_handler,
+            default_cursor: false,
         }
+    }
+
+    /// See [`TextViewStyle::default_cursor`](super::TextViewStyle::default_cursor).
+    pub(super) fn default_cursor(mut self, default_cursor: bool) -> Self {
+        self.default_cursor = default_cursor;
+        self
     }
 
     fn image_element(
@@ -261,6 +271,7 @@ impl InlineFlow {
         _title: &str,
         size: Size<Pixels>,
         link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+        default_cursor: bool,
     ) -> AnyElement {
         img(source.clone())
             .id(ix)
@@ -271,7 +282,7 @@ impl InlineFlow {
             .when_some(link.clone(), |this, link| {
                 let aux_link = link.clone();
                 let aux_link_click_handler = link_click_handler.clone();
-                this.cursor_pointer()
+                this.when(!default_cursor, |this| this.cursor_pointer())
                     .on_click(move |event, window, cx| {
                         crate::TextSelection::end(window, cx);
                         cx.stop_propagation();
@@ -630,6 +641,7 @@ impl Element for InlineFlow {
                         title.as_str(),
                         fragment_size,
                         self.link_click_handler.clone(),
+                        self.default_cursor,
                     );
                     element.prepaint_as_root(
                         bounds.origin + origin,

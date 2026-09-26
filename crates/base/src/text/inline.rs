@@ -939,14 +939,22 @@ impl Element for Inline {
             });
         }
 
-        if is_selection || is_selectable {
-            window.set_cursor_style(CursorStyle::IBeam, &hitbox);
-        }
+        // `TextViewStyle::with_default_cursor`: the host wants the arrow left
+        // alone over this document, so neither the selection I-beam nor the
+        // link hand is asked for. Selection and links work as before.
+        let default_cursor = GlobalState::global(cx)
+            .text_view_state()
+            .is_some_and(|state| state.read(cx).text_view_style.default_cursor());
+        if !default_cursor {
+            if is_selection || is_selectable {
+                window.set_cursor_style(CursorStyle::IBeam, &hitbox);
+            }
 
-        // link cursor pointer
-        let mouse_position = window.mouse_position();
-        if let Some(_) = Self::link_for_position(&text_layout, &self.links, mouse_position) {
-            window.set_cursor_style(CursorStyle::PointingHand, &hitbox);
+            // link cursor pointer
+            let mouse_position = window.mouse_position();
+            if let Some(_) = Self::link_for_position(&text_layout, &self.links, mouse_position) {
+                window.set_cursor_style(CursorStyle::PointingHand, &hitbox);
+            }
         }
 
         if let Some(selection) = &state.selection {

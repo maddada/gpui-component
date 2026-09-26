@@ -330,8 +330,13 @@ impl Element for InlineObject {
             let color = view.as_ref().unwrap().read(cx).text_view_style.selection();
             window.paint_quad(gpui::fill(bounds, color));
         }
+        let default_cursor = view
+            .as_ref()
+            .is_some_and(|view| view.read(cx).text_view_style.default_cursor());
         if let Some(link) = self.link.clone() {
-            window.set_cursor_style(CursorStyle::PointingHand, hitbox);
+            if !default_cursor {
+                window.set_cursor_style(CursorStyle::PointingHand, hitbox);
+            }
             let link_hitbox = hitbox.clone();
             let link_view = view.clone();
             let handler = self.link_click_handler.clone();
@@ -360,7 +365,7 @@ impl Element for InlineObject {
             });
         }
         if selectable {
-            if self.link.is_none() {
+            if self.link.is_none() && !default_cursor {
                 window.set_cursor_style(CursorStyle::IBeam, hitbox);
             }
             let visible = bounds.intersect(&window.content_mask().bounds);

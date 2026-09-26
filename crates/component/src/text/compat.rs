@@ -359,6 +359,7 @@ pub(super) fn resolve_component_style(
         .with_table_head(table_head)
         .with_table_cell(table_cell)
         .with_inline_code(inline_code)
+        .with_default_cursor(legacy.default_cursor)
         .with_dark(is_dark);
     style
 }

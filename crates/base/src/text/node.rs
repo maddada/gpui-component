@@ -2076,6 +2076,7 @@ impl Paragraph {
                 self.inline_flow_items(fade_key, fades, backgrounds, node_cx, cx),
                 node_cx.link_click_handler.clone(),
             )
+            .default_cursor(node_cx.style.default_cursor())
             .into_any_element();
         }
 
@@ -2160,7 +2161,8 @@ impl Paragraph {
                             let link_click_handler = link_click_handler.clone();
                             let aux_link = link.clone();
                             let aux_link_click_handler = link_click_handler.clone();
-                            this.cursor_pointer()
+                            let default_cursor = node_cx.style.default_cursor();
+                            this.when(!default_cursor, |this| this.cursor_pointer())
                                 .on_click(move |event, window, cx| {
                                     crate::TextSelection::end(window, cx);
                                     cx.stop_propagation();
