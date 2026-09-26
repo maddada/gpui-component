@@ -128,60 +128,59 @@ impl Render for Tooltip {
         // Taffy measures a flex item's base and automatic minimum size with its text unwrapped, so a bubble can only shrink to a narrower box (the room next to a native view, see `TooltipOverlayPositioner`) when every flex item down to the text's container has min-width 0. A bubble that fits keeps its one-line width.
         // Ghostex: in a frosted window (the desktop's tooltip host under window glass) the bubble
         // is a thinned fill over the window's blur, which is limited to the bubble's own frame.
+        //
+        // CDXC:Tooltips 2026-09-26 WHY:
+        // The wrapper reports the bubble's laid-out frame (its only child, borders included). A canvas inside the bubble, the obvious way, sits at the bubble's content origin because an absolute child without insets keeps its static position, so the blur ran one padding plus border to the right of the bubble and the bubble no longer matched its text.
         let frosted = window.frosted_surface();
-        div().flex().min_w_0().child(
-            h_flex()
-                .min_w_0()
-                .font_family(cx.theme().font_family.clone())
-                .mx_3()
-                .my_2()
-                .text_color(cx.theme().popover_foreground)
-                .map(|this| {
-                    if frosted {
-                        this.relative()
-                            .bg(cx.theme().tokens.popover.opacity(frosted_tooltip_alpha()))
-                            .child(
-                                canvas(
-                                    |_, _, _| {},
-                                    |bounds, _, window, _| {
-                                        window.report_frosted_region(
-                                            bounds,
-                                            px(FROSTED_TOOLTIP_RADIUS),
-                                        );
-                                    },
-                                )
-                                .absolute()
-                                .size_full(),
-                            )
-                    } else {
-                        this.bg(cx.theme().tokens.popover).shadow_md()
+        div()
+            .flex()
+            .min_w_0()
+            .when(frosted, |this| {
+                this.on_children_prepainted(|bounds, window, _| {
+                    if let Some(bubble) = bounds.first() {
+                        window.report_frosted_region(*bubble, px(FROSTED_TOOLTIP_RADIUS));
                     }
                 })
-                .border_1()
-                .border_color(cx.theme().border)
-                .rounded(px(if frosted { FROSTED_TOOLTIP_RADIUS } else { 6. }))
-                .justify_between()
-                .py_0p5()
-                .px_2()
-                .text_sm()
-                .gap_3()
-                .refine_style(&self.style)
-                .map(|this| {
-                    this.child(div().min_w_0().map(|this| match self.content {
-                        TooltipContext::Text(ref text) => this.child(text.clone()),
-                        TooltipContext::Element(ref builder) => this.child(builder(window, cx)),
-                    }))
-                })
-                .when_some(key_binding, |this, kbd| {
-                    this.child(
-                        div()
-                            .text_xs()
-                            .flex_shrink_0()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(kbd.appearance(false)),
-                    )
-                }),
-        )
+            })
+            .child(
+                h_flex()
+                    .min_w_0()
+                    .font_family(cx.theme().font_family.clone())
+                    .mx_3()
+                    .my_2()
+                    .text_color(cx.theme().popover_foreground)
+                    .map(|this| {
+                        if frosted {
+                            this.bg(cx.theme().tokens.popover.opacity(frosted_tooltip_alpha()))
+                        } else {
+                            this.bg(cx.theme().tokens.popover).shadow_md()
+                        }
+                    })
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .rounded(px(if frosted { FROSTED_TOOLTIP_RADIUS } else { 6. }))
+                    .justify_between()
+                    .py_0p5()
+                    .px_2()
+                    .text_sm()
+                    .gap_3()
+                    .refine_style(&self.style)
+                    .map(|this| {
+                        this.child(div().min_w_0().map(|this| match self.content {
+                            TooltipContext::Text(ref text) => this.child(text.clone()),
+                            TooltipContext::Element(ref builder) => this.child(builder(window, cx)),
+                        }))
+                    })
+                    .when_some(key_binding, |this, kbd| {
+                        this.child(
+                            div()
+                                .text_xs()
+                                .flex_shrink_0()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(kbd.appearance(false)),
+                        )
+                    }),
+            )
     }
 }
 
