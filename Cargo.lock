@@ -4016,6 +4016,7 @@ dependencies = [
  "gpui-kit-assets",
  "gpui_platform",
  "gpui_web",
+ "lsp-types 0.97.0",
 ]
 
 [[package]]
