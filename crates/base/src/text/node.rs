@@ -1112,7 +1112,7 @@ pub(crate) struct Paragraph {
 /// Derived state: a clone starts empty and rebuilds, and it is invisible to
 /// `Debug` and equality.
 #[derive(Default)]
-pub(super) struct ParagraphRenderCache(Mutex<Option<ParagraphRender>>);
+pub(super) struct ParagraphRenderCache(Mutex<Option<ParagraphRender>>, OnceLock<bool>);
 
 impl Clone for ParagraphRenderCache {
     fn clone(&self) -> Self {
@@ -2440,11 +2440,17 @@ impl Paragraph {
                     .any(|child| child.marks.iter().any(|(_, mark)| mark.link.is_some()))
             // A paragraph that names a colour needs the per-fragment flow,
             // which is what can reserve the room a swatch is painted in.
-            || node_cx.style.prose_swatch().is_some()
-                && self
-                    .children
-                    .iter()
-                    .any(|child| !super::inline_code::hex_colors(&child.text).is_empty())
+            || node_cx.style.prose_swatch().is_some() && self.names_a_color()
+    }
+
+    /// Whether any of the paragraph's text names a hex colour, scanned once
+    /// per parsed paragraph rather than on every frame.
+    fn names_a_color(&self) -> bool {
+        *self.render_cache.1.get_or_init(|| {
+            self.children
+                .iter()
+                .any(|child| !super::inline_code::hex_colors(&child.text).is_empty())
+        })
     }
 
     fn inline_flow_items(
