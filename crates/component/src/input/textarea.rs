@@ -1,8 +1,8 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, DefiniteLength, Entity, IntoElement, RenderOnce, SharedString, StyleRefinement, Styled,
-    Window, prelude::FluentBuilder as _,
+    App, DefiniteLength, ElementId, Entity, IntoElement, RenderOnce, SharedString, StyleRefinement,
+    Styled, Window, prelude::FluentBuilder as _,
 };
 
 use super::{Input, TextareaState};
@@ -18,8 +18,10 @@ pub struct Textarea {
     style: StyleRefinement,
     size: Size,
     height: Option<DefiniteLength>,
+    id: Option<ElementId>,
     appearance: bool,
     bordered: bool,
+    focus_bordered: bool,
     disabled: bool,
     readonly: bool,
     tab_index: isize,
@@ -66,8 +68,10 @@ impl Textarea {
             style: StyleRefinement::default(),
             size: Size::default(),
             height: None,
+            id: None,
             appearance: true,
             bordered: true,
+            focus_bordered: true,
             disabled: false,
             readonly: false,
             tab_index: 0,
@@ -96,6 +100,19 @@ impl Textarea {
 
     pub fn bordered(mut self, bordered: bool) -> Self {
         self.bordered = bordered;
+        self
+    }
+
+    /// Sets the GPUI identity of the textarea frame, as [`Input::id`] does.
+    pub fn id(mut self, id: impl Into<ElementId>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    /// Set focus border for the textarea, default is true, as
+    /// [`Input::focus_bordered`] does.
+    pub fn focus_bordered(mut self, bordered: bool) -> Self {
+        self.focus_bordered = bordered;
         self
     }
 
@@ -206,8 +223,10 @@ impl Textarea {
             .when_some(self.token_click_listener, |this, listener| {
                 this.on_token_click(move |event, window, cx| listener(event, window, cx))
             })
+            .when_some(self.id, |this, id| this.id(id))
             .appearance(self.appearance)
             .bordered(self.bordered)
+            .focus_bordered(self.focus_bordered)
             .disabled(self.disabled)
             .readonly(self.readonly)
             .tab_index(self.tab_index)
