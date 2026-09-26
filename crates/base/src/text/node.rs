@@ -14,7 +14,7 @@ use gpui::{
 use markdown::mdast;
 
 use crate::{
-    StyledExt, h_flex,
+    StyledExt, h_flex, v_flex,
     scrollable_mask::horizontal_scroll_area,
     text::{
         CodeBlockActionsFn, CodeBlockHighlighterFn, LinkClickHandlerFn, MarkdownExtensions,
@@ -2745,6 +2745,53 @@ impl BlockNode {
 }
 
 impl BlockNode {
+    /// The box a list item's marker sits in.
+    ///
+    /// It is a box of its own so a host can give it a fixed gutter
+    /// ([`TextViewStyle::list_marker`]) and put every item's text on one
+    /// column; `justify_end` is what pushes the marker against that column, the
+    /// way CSS's outside marker sits. An invisible copy holds the same column
+    /// for the blocks an item holds under its first line.
+    fn list_marker(
+        ix: usize,
+        options: NodeRenderOptions,
+        style: &TextViewStyle,
+        invisible: bool,
+    ) -> Div {
+        div()
+            .flex()
+            .justify_end()
+            .flex_shrink_0()
+            .when(invisible, |this| this.invisible())
+            .refine_style(style.list_marker())
+            .child(list_item_prefix(
+                ix,
+                options.list_start,
+                options.ordered,
+                options.list_depth(),
+            ))
+    }
+
+    /// A block an item holds under its first line (a continuation paragraph,
+    /// a fenced code block, a quote, a table), on the column the item's text
+    /// starts on, whatever gutter the host gave the marker.
+    fn render_list_item_block(
+        content: AnyElement,
+        ix: usize,
+        options: NodeRenderOptions,
+        checked: Option<bool>,
+        style: &TextViewStyle,
+    ) -> Div {
+        h_flex()
+            .w_full()
+            .min_w_0()
+            .items_start()
+            .when(!options.todo && checked.is_none(), |this| {
+                this.child(Self::list_marker(ix, options, style, true))
+            })
+            .child(div().flex_1().min_w_0().overflow_hidden().child(content))
+    }
+
     fn render_list_item_row(
         content: AnyElement,
         ix: usize,
@@ -2760,12 +2807,7 @@ impl BlockNode {
             .items_start()
             .content_start()
             .when(!options.todo && checked.is_none(), |this| {
-                this.child(list_item_prefix(
-                    ix,
-                    options.list_start,
-                    options.ordered,
-                    options.list_depth(),
-                ))
+                this.child(Self::list_marker(ix, options, style, false))
             })
             .when_some(checked, |this, checked| {
                 // Todo list checkbox
@@ -2845,19 +2887,19 @@ impl BlockNode {
                                 );
 
                                 // Continuation paragraph — stack vertically below
-                                // the previous row, indented to align with the text
-                                // column (past bullet/number prefix).
+                                // the previous row, on the item's text column
+                                // (past the bullet/number gutter).
                                 if last_not_list {
                                     if let Some(preceding_row) = items.pop() {
-                                        items.push(
-                                            div().child(preceding_row).child(
-                                                div()
-                                                    .w_full()
-                                                    .pl(rems(1.))
-                                                    .overflow_hidden()
-                                                    .child(text),
+                                        items.push(div().child(preceding_row).child(
+                                            Self::render_list_item_block(
+                                                text,
+                                                ix,
+                                                options,
+                                                *checked,
+                                                &node_cx.style,
                                             ),
-                                        );
+                                        ));
                                         continue;
                                     }
                                 }
@@ -2872,17 +2914,26 @@ impl BlockNode {
                                 ));
                             }
                             BlockNode::List { .. } => {
-                                items.push(div().ml(rems(1.)).child(child.render_block(
-                                    NodeRenderOptions {
-                                        depth: options.depth + 1,
-                                        todo: checked.is_some(),
-                                        is_last: true,
-                                        ..options
-                                    },
-                                    node_cx,
-                                    window,
-                                    cx,
-                                )));
+                                // A nested list is a block of its own, so it
+                                // keeps the paragraph gap around it rather than
+                                // sitting tight against the item that opened it.
+                                items.push(
+                                    div()
+                                        .ml(rems(1.))
+                                        .pt(node_cx.style.paragraph_gap())
+                                        .pb(node_cx.style.paragraph_gap())
+                                        .child(child.render_block(
+                                            NodeRenderOptions {
+                                                depth: options.depth + 1,
+                                                todo: checked.is_some(),
+                                                is_last: true,
+                                                ..options
+                                            },
+                                            node_cx,
+                                            window,
+                                            cx,
+                                        )),
+                                );
                             }
                             BlockNode::Root { .. }
                             | BlockNode::Heading { .. }
@@ -2913,16 +2964,19 @@ impl BlockNode {
                                         window.line_height(),
                                     ));
                                 } else {
-                                    // Indent continuation blocks to align with a
-                                    // nested sub-list (`ml(rems(1.))`) and with
-                                    // continuation paragraphs.
+                                    // Any other block an item holds belongs to
+                                    // the item, so it sits under the item's
+                                    // text, a paragraph gap below it, on the
+                                    // column the text starts on.
                                     items.push(
-                                        div()
-                                            .w_full()
-                                            .min_w_0()
-                                            .pl(rems(1.))
-                                            .overflow_hidden()
-                                            .child(block),
+                                        Self::render_list_item_block(
+                                            block,
+                                            ix,
+                                            options,
+                                            *checked,
+                                            &node_cx.style,
+                                        )
+                                        .pt(node_cx.style.paragraph_gap()),
                                     );
                                 }
                             }
@@ -3075,6 +3129,7 @@ impl BlockNode {
                             this.border_r_1().border_color(style.border())
                         })
                         .refine_style(&style.table_cell())
+                        .when(row_ix == 0, |this| this.refine_style(style.table_head_cell()))
                         .child(cell.children.render(fade_key, node_cx, window, cx)),
                 );
             }
@@ -3085,6 +3140,7 @@ impl BlockNode {
                     .border_color(style.border())
                     .flex()
                     .flex_row()
+                    .refine_style(style.table_row())
                     // The first row is the header, as everywhere else that
                     // reads a table (`table_data`, `to_markdown`). The
                     // refinement comes last so it can override the defaults.
@@ -3098,7 +3154,7 @@ impl BlockNode {
         }
 
         div()
-            .pb(rems(1.))
+            .when(!options.is_last, |this| this.pb(style.paragraph_gap()))
             .w_full()
             .child(
                 // Scroll viewport owns the visible frame, including any
@@ -3117,7 +3173,8 @@ impl BlockNode {
                         .bg(cx.theme().tokens.colors.surface)
                         .border_1()
                         .border_color(style.border())
-                        .refine_style(style.table()),
+                        .refine_style(style.table())
+                        .refine_style(style.table_track()),
                     // Row track sized to `max(viewport, column floors)`:
                     // `min_w_full` fills the frame while the columns can still
                     // shrink-to-fit (their text wrapping), the definite
@@ -3185,6 +3242,7 @@ impl BlockNode {
                             this.border_r_1().border_color(style.border())
                         })
                         .refine_style(&style.table_cell())
+                        .when(row_ix == 0, |this| this.refine_style(style.table_head_cell()))
                         .child(cell.children.render(fade_key, node_cx, window, cx)),
                 );
             }
@@ -3196,6 +3254,7 @@ impl BlockNode {
                     .border_color(style.border())
                     .flex()
                     .flex_row()
+                    .refine_style(style.table_row())
                     // The first row is the header, as everywhere else that
                     // reads a table (`table_data`, `to_markdown`). The
                     // refinement comes last so it can override the defaults.
@@ -3209,7 +3268,7 @@ impl BlockNode {
         }
 
         div()
-            .pb(rems(1.))
+            .when(!options.is_last, |this| this.pb(style.paragraph_gap()))
             .w_full()
             .child(
                 div()
@@ -3219,7 +3278,8 @@ impl BlockNode {
                     .border_color(style.border())
                     .overflow_hidden()
                     .children(rows)
-                    .refine_style(&style.table()),
+                    .refine_style(&style.table())
+                    .refine_style(style.table_track()),
             )
             // Custom actions row (e.g. copy / download) rendered below the
             // table. The hook's element spans full width; alignment is up to
@@ -3287,6 +3347,11 @@ impl BlockNode {
                     .text_size(text_size)
                     .font_weight(font_weight)
                     .refine_style(&node_cx.style.heading(*level))
+                    .when(options.is_last, |this| this.pb(px(0.)))
+                    // Nothing above the first block to be louder than, so the
+                    // heading's extra room above is dropped there (CSS's
+                    // `> :first-child { margin-top: 0 }`).
+                    .when(options.ix == 0, |this| this.pt(px(0.)))
                     .child(children.render(
                         span.map(|span| TextLeafKey::block(span.start)),
                         node_cx,
@@ -3317,10 +3382,12 @@ impl BlockNode {
                 ordered,
                 start,
                 ..
-            } => div()
+            } => v_flex()
                 .w_full()
                 .min_w_0()
                 .pb(mb)
+                // A host's list indent and item spacing (`gap`) live here.
+                .refine_style(node_cx.style.list())
                 .children({
                     let mut items = Vec::with_capacity(children.len());
                     let mut item_index = 0;

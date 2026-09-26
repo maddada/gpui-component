@@ -20,6 +20,13 @@ pub struct TextViewStyle {
     /// The first parameter is the heading level (1-6), the second parameter is
     /// the base font size.
     pub heading_font_size: Option<Arc<dyn Fn(u8, Pixels) -> Pixels + Send + Sync + 'static>>,
+    /// Additional typography and spacing applied to every heading, after the
+    /// size [`Self::heading_font_size`] resolves.
+    ///
+    /// A heading that is the first block drops its top padding and one that
+    /// is the last block drops its bottom padding, as CSS's
+    /// `> :first-child` / `> :last-child` margin rules do.
+    pub heading: StyleRefinement,
     /// Highlight theme for code blocks. Default: [`HighlightTheme::default_light()`]
     pub highlight_theme: Arc<HighlightTheme>,
     /// The style refinement for code blocks.
@@ -42,6 +49,26 @@ pub struct TextViewStyle {
     /// on a single line — columns then never shrink and the table scrolls as
     /// soon as the content is wider than the frame.
     pub table_cell: StyleRefinement,
+    /// Style refinement applied to the box that draws the table's frame and
+    /// holds its rows, after [`Self::table`]. In scroll mode this is the
+    /// scroll viewport.
+    pub table_track: StyleRefinement,
+    /// Style refinement applied to every row, after the default row rule.
+    pub table_row: StyleRefinement,
+    /// Style refinement applied to the header row, after `table_row` and
+    /// [`Self::table_head`].
+    pub table_head_row: StyleRefinement,
+    /// Style refinement applied to a header cell, after `table_cell`.
+    pub table_head_cell: StyleRefinement,
+    /// Style refinement applied to a list, where its indent and item spacing
+    /// (`gap`) live.
+    pub list: StyleRefinement,
+    /// Style refinement applied to the box a list item's marker sits in.
+    ///
+    /// Give it a minimum width to get CSS's `list-style-position: outside`
+    /// gutter: the marker is pushed to the gutter's right edge and every
+    /// item's text starts on one column.
+    pub list_marker: StyleRefinement,
     /// The highlight style for inline code.
     ///
     /// Default is [`HighlightStyle::default()`], the `background_color` will
@@ -63,11 +90,18 @@ impl Default for TextViewStyle {
             paragraph_gap: rems(1.),
             heading_base_font_size: px(14.),
             heading_font_size: None,
+            heading: StyleRefinement::default(),
             highlight_theme: HighlightTheme::default_light().clone(),
             code_block: StyleRefinement::default(),
             table: StyleRefinement::default(),
             table_head: StyleRefinement::default(),
             table_cell: StyleRefinement::default(),
+            table_track: StyleRefinement::default(),
+            table_row: StyleRefinement::default(),
+            table_head_row: StyleRefinement::default(),
+            table_head_cell: StyleRefinement::default(),
+            list: StyleRefinement::default(),
+            list_marker: StyleRefinement::default(),
             inline_code: HighlightStyle::default(),
             default_cursor: false,
             is_dark: false,
@@ -87,11 +121,18 @@ impl PartialEq for TextViewStyle {
                 (None, None) => true,
                 _ => false,
             }
+            && self.heading == other.heading
             && self.highlight_theme == other.highlight_theme
             && self.code_block == other.code_block
             && self.table == other.table
             && self.table_head == other.table_head
             && self.table_cell == other.table_cell
+            && self.table_track == other.table_track
+            && self.table_row == other.table_row
+            && self.table_head_row == other.table_head_row
+            && self.table_head_cell == other.table_head_cell
+            && self.list == other.list
+            && self.list_marker == other.list_marker
             && self.inline_code == other.inline_code
             && self.default_cursor == other.default_cursor
             && self.is_dark == other.is_dark

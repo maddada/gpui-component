@@ -24,6 +24,11 @@ pub struct TextViewStyle {
     table: StyleRefinement,
     table_head: StyleRefinement,
     table_cell: StyleRefinement,
+    table_track: StyleRefinement,
+    table_row: StyleRefinement,
+    table_head_cell: StyleRefinement,
+    list: StyleRefinement,
+    list_marker: StyleRefinement,
     inline_code: HighlightStyle,
     default_cursor: bool,
     is_dark: bool,
@@ -43,6 +48,11 @@ impl PartialEq for TextViewStyle {
             && self.table == other.table
             && self.table_head == other.table_head
             && self.table_cell == other.table_cell
+            && self.table_track == other.table_track
+            && self.table_row == other.table_row
+            && self.table_head_cell == other.table_head_cell
+            && self.list == other.list
+            && self.list_marker == other.list_marker
             && self.inline_code == other.inline_code
             && self.default_cursor == other.default_cursor
             && self.is_dark == other.is_dark
@@ -83,6 +93,11 @@ impl TextViewStyle {
             table: StyleRefinement::default(),
             table_head: StyleRefinement::default(),
             table_cell: StyleRefinement::default(),
+            table_track: StyleRefinement::default(),
+            table_row: StyleRefinement::default(),
+            table_head_cell: StyleRefinement::default(),
+            list: StyleRefinement::default(),
+            list_marker: StyleRefinement::default(),
             inline_code: HighlightStyle {
                 background_color: Some(colors.accent),
                 ..Default::default()
@@ -200,6 +215,46 @@ impl TextViewStyle {
         self
     }
 
+    /// Sets the style refinement for the box that draws a table's frame and
+    /// holds its rows, applied after [`Self::with_table`]. In the scroll
+    /// layout this is the scroll viewport.
+    pub fn with_table_track(mut self, style: StyleRefinement) -> Self {
+        self.table_track = style;
+        self
+    }
+
+    /// Sets the style refinement applied to every table row, before the
+    /// header refinement of [`Self::with_table_head`].
+    pub fn with_table_row(mut self, style: StyleRefinement) -> Self {
+        self.table_row = style;
+        self
+    }
+
+    /// Sets the style refinement applied to a header cell, after
+    /// [`Self::with_table_cell`].
+    pub fn with_table_head_cell(mut self, style: StyleRefinement) -> Self {
+        self.table_head_cell = style;
+        self
+    }
+
+    /// Sets the style refinement applied to a list, where its indent and item
+    /// spacing (`gap`) live.
+    pub fn with_list(mut self, style: StyleRefinement) -> Self {
+        self.list = style;
+        self
+    }
+
+    /// Sets the style refinement applied to the box a list item's marker sits
+    /// in.
+    ///
+    /// Give it a minimum width to get CSS's `list-style-position: outside`
+    /// gutter: the marker is pushed to the gutter's right edge and every
+    /// item's text, and every block the item holds, starts on one column.
+    pub fn with_list_marker(mut self, style: StyleRefinement) -> Self {
+        self.list_marker = style;
+        self
+    }
+
     /// Sets whether content-specific assets should use their dark variant.
     pub fn with_dark(mut self, is_dark: bool) -> Self {
         self.is_dark = is_dark;
@@ -264,6 +319,31 @@ impl TextViewStyle {
     /// The style refinement for table cells.
     pub fn table_cell(&self) -> &StyleRefinement {
         &self.table_cell
+    }
+
+    /// The style refinement for the box that draws a table's frame.
+    pub fn table_track(&self) -> &StyleRefinement {
+        &self.table_track
+    }
+
+    /// The style refinement for every table row.
+    pub fn table_row(&self) -> &StyleRefinement {
+        &self.table_row
+    }
+
+    /// The style refinement for a table header cell.
+    pub fn table_head_cell(&self) -> &StyleRefinement {
+        &self.table_head_cell
+    }
+
+    /// The style refinement for a list.
+    pub fn list(&self) -> &StyleRefinement {
+        &self.list
+    }
+
+    /// The style refinement for a list item's marker box.
+    pub fn list_marker(&self) -> &StyleRefinement {
+        &self.list_marker
     }
 
     /// The highlight style for inline code, before the code-background

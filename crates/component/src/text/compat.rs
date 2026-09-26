@@ -325,7 +325,10 @@ pub(super) fn resolve_component_style(
     };
     let code_block = refined(themed.code_block().clone(), &legacy.code_block);
     let table = refined(themed.table().clone(), &legacy.table);
-    let table_head = refined(themed.table_head().clone(), &legacy.table_head);
+    let table_head = refined(
+        refined(themed.table_head().clone(), &legacy.table_head),
+        &legacy.table_head_row,
+    );
     let table_cell = refined(themed.table_cell().clone(), &legacy.table_cell);
 
     let mut inline_code = themed.inline_code();
@@ -338,6 +341,7 @@ pub(super) fn resolve_component_style(
 
     let heading_base_font_size = legacy.heading_base_font_size;
     let heading_font_size = legacy.heading_font_size;
+    let heading = legacy.heading;
     let style = themed
         .with_paragraph_gap(legacy.paragraph_gap)
         .with_heading(move |level| {
@@ -352,12 +356,19 @@ pub(super) fn resolve_component_style(
             let text_size = heading_font_size.as_ref().map_or(default_size, |resolve| {
                 resolve(level, heading_base_font_size)
             });
-            StyleRefinement::default().text_size(text_size)
+            let mut style = StyleRefinement::default().text_size(text_size);
+            style.refine(&heading);
+            style
         })
         .with_code_block(code_block)
         .with_table(table)
         .with_table_head(table_head)
         .with_table_cell(table_cell)
+        .with_table_track(legacy.table_track)
+        .with_table_row(legacy.table_row)
+        .with_table_head_cell(legacy.table_head_cell)
+        .with_list(legacy.list)
+        .with_list_marker(legacy.list_marker)
         .with_inline_code(inline_code)
         .with_default_cursor(legacy.default_cursor)
         .with_dark(is_dark);
