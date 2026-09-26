@@ -165,6 +165,17 @@ impl TextView {
         self.inner = self.inner.on_link_click(f);
         self
     }
+    /// Draws some links as reference chips: `resolve` receives each link's URL
+    /// and its text and returns the [`InlineLink`](super::InlineLink) to draw
+    /// in its place, or `None` to leave the link as it is. Clicks still go to
+    /// [`Self::on_link_click`].
+    pub fn link_presentation<F>(mut self, resolve: F) -> Self
+    where
+        F: Fn(&str, &str) -> Option<super::InlineLink> + Send + Sync + 'static,
+    {
+        self.inner = self.inner.link_presentation(resolve);
+        self
+    }
     /// Answers a secondary (right) press on a link, a linked image or a linked
     /// inline object, for example with a context menu. The handler runs on
     /// the press, with the press position at `window.mouse_position()`; the

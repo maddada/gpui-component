@@ -221,6 +221,9 @@ pub(super) struct Inline {
     paint_origin: Option<Point<Pixels>>,
     selection_bounds: Option<Bounds<Pixels>>,
     selection_source: Option<(Arc<Mutex<InlineState>>, Range<usize>)>,
+    /// The text stands for its whole `selection_source` range rather than
+    /// byte for byte: a reference chip's label for its link's text.
+    atomic_selection: bool,
     /// Range highlight backgrounds, painted behind the text.
     range_backgrounds: Vec<(Range<usize>, Hsla)>,
     /// The start of a pending reveal, when it is in this text.
@@ -386,6 +389,7 @@ impl Inline {
             paint_origin: None,
             selection_bounds: None,
             selection_source: None,
+            atomic_selection: false,
             range_backgrounds: Vec::new(),
             reveal: None,
             link_click_handler,
@@ -418,6 +422,13 @@ impl Inline {
         range: Range<usize>,
     ) -> Self {
         self.selection_source = Some((state, range));
+        self
+    }
+
+    /// Map any selection of this text onto its whole `selection_source`
+    /// range, and any selection of that range onto the whole text.
+    pub(super) fn atomic_selection(mut self, atomic: bool) -> Self {
+        self.atomic_selection = atomic;
         self
     }
 
@@ -544,6 +555,8 @@ impl Inline {
         }
 
         if text_view_state.preserve_inline_selection {
+            let atomic = self.atomic_selection;
+            let len = self.text.len();
             let selection = if let Some((source, range)) = &self.selection_source {
                 source
                     .lock()
@@ -552,8 +565,13 @@ impl Inline {
                     .and_then(|selection| {
                         let start = selection.start.max(range.start);
                         let end = selection.end.min(range.end);
-                        (start < end)
-                            .then(|| Selection::new(start - range.start, end - range.start))
+                        (start < end).then(|| {
+                            if atomic {
+                                Selection::new(0, len)
+                            } else {
+                                Selection::new(start - range.start, end - range.start)
+                            }
+                        })
                     })
             } else {
                 self.state.lock().ok().and_then(|state| state.selection)
@@ -958,8 +976,11 @@ impl Element for Inline {
             && let Some(selection) = selection
             && let Ok(mut source) = source.lock()
         {
-            let start = range.start + selection.start;
-            let end = range.start + selection.end;
+            let (start, end) = if self.atomic_selection {
+                (range.start, range.end)
+            } else {
+                (range.start + selection.start, range.start + selection.end)
+            };
             source.selection = Some(match source.selection {
                 Some(previous) => Selection::new(previous.start.min(start), previous.end.max(end)),
                 None => Selection::new(start, end),

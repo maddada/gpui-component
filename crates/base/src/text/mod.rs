@@ -4,6 +4,7 @@ mod inline;
 mod inline_code;
 mod inline_element;
 mod inline_flow;
+mod inline_link;
 mod inline_object;
 #[cfg(test)]
 mod inline_virtual_tests;
@@ -20,6 +21,7 @@ mod utils;
 
 use gpui::{App, ElementId, IntoElement, RenderOnce, SharedString, Window};
 pub use inline_element::*;
+pub use inline_link::InlineLink;
 pub use markdown_ext::*;
 pub use node::{CodeBlock, TableData};
 pub use range_highlight::{RangeHighlight, RangeHighlightError, RenderedText};

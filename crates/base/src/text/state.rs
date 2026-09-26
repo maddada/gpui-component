@@ -120,6 +120,7 @@ pub struct TextViewState {
     pub(super) image_source: Option<std::sync::Arc<super::text_view::ImageSourceFn>>,
     pub(super) link_click_handler: Option<std::sync::Arc<LinkClickHandlerFn>>,
     pub(super) link_secondary_click: Option<std::sync::Arc<super::text_view::LinkSecondaryClickFn>>,
+    pub(super) link_presentation: Option<std::sync::Arc<super::inline_link::LinkPresentationFn>>,
     pub(super) markdown_extensions: Arc<MarkdownExtensions>,
 
     pub(super) is_selecting: bool,
@@ -253,6 +254,7 @@ impl TextViewState {
             table_actions: None,
             link_click_handler: None,
             link_secondary_click: None,
+            link_presentation: None,
             image_source: None,
             markdown_extensions: Arc::default(),
             is_selecting: false,
@@ -996,6 +998,7 @@ impl Render for TextViewState {
             table_actions: self.table_actions.clone(),
             link_click_handler: self.link_click_handler.clone(),
             link_secondary_click: self.link_secondary_click.clone(),
+            link_presentation: self.link_presentation.clone(),
             image_source: self.image_source.clone(),
             markdown_extensions: self.markdown_extensions.clone(),
             stream_fade,

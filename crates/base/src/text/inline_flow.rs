@@ -27,6 +27,7 @@ use super::{
 };
 
 const IMAGE_LEN: usize = 1;
+const ELLIPSIS: gpui::SharedString = gpui::SharedString::new_static("…");
 pub(super) const INLINE_CODE_PADDING: f32 = 2.;
 
 pub(super) struct InlineFlow {
@@ -64,6 +65,12 @@ pub(super) enum InlineFlowItem {
         backgrounds: Vec<(Range<usize>, Hsla)>,
         /// The start of a pending reveal, when it is in this item.
         reveal: Option<RevealAt>,
+        /// Where this item's text starts in `state`'s text: an item split
+        /// around a reference chip keeps its paragraph run's state.
+        source_offset: usize,
+        /// A link a host presents as a chip, drawn in place of the link's own
+        /// text (`text` is then the chip's label).
+        reference: Option<super::inline_link::ReferenceChip>,
     },
     Image {
         source: ImageSource,
@@ -204,6 +211,10 @@ enum PositionedFragment {
         /// The piece of a host's chip this fragment carries, its box relative
         /// to the flow.
         chip: Option<FragmentChip>,
+        /// A reference chip wider than the line, laid out at the wrap width.
+        /// Only such a chip may ellipsize its label: GPUI's truncation sums
+        /// advances without kerning, which would cut labels that fit.
+        clamped: bool,
     },
     Image {
         item_ix: usize,
@@ -246,6 +257,7 @@ enum MeasureItem {
         text: SharedString,
         links: Vec<(Range<usize>, LinkMark)>,
         highlights: Vec<(Range<usize>, InlineHighlight)>,
+        reference: Option<super::InlineLink>,
     },
     Image {
         source: ImageSource,
@@ -273,6 +285,8 @@ enum LineFragmentKind {
         code_background: Option<(Bounds<Pixels>, Hsla)>,
         /// A host's chip piece, its box relative to the fragment.
         chip: Option<FragmentChip>,
+        /// See [`PositionedFragment::Text::clamped`].
+        clamped: bool,
     },
     Image,
 }
@@ -531,6 +545,9 @@ impl Element for InlineFlow {
             .reduce(|found, next| if found.1 { found } else { next })
             .map(|(ix, _)| ix);
 
+        let link_tooltip = cx
+            .try_global::<super::TextViewDefaults>()
+            .and_then(|defaults| defaults.link_tooltip.clone());
         let mut text_fragment_count = 0;
         for (fragment_ix, fragment) in layout.fragments.iter().enumerate() {
             match fragment {
@@ -596,15 +613,30 @@ impl Element for InlineFlow {
                     selection_bounds,
                     code_background,
                     chip,
+                    clamped,
                 } => {
                     let InlineFlowItem::Text {
                         state: source_state,
                         backgrounds,
                         reveal,
+                        source_offset,
+                        reference,
                         ..
                     } = &self.items[*item_ix]
                     else {
                         continue;
+                    };
+                    // Where this fragment's text is in its source state: a
+                    // reference chip stands for its whole link, whatever part
+                    // of its label is selected.
+                    let (selection_range, atomic) = match reference {
+                        Some(reference) => {
+                            (*source_offset..*source_offset + reference.source_len, true)
+                        }
+                        None => (
+                            *source_offset + source_range.start..*source_offset + source_range.end,
+                            false,
+                        ),
                     };
                     let (origin, fragment_size, font_size) = (*origin, *fragment_size, *font_size);
                     let state = frame_state.borrow_mut().fragment_state(text_fragment_count);
@@ -645,13 +677,26 @@ impl Element for InlineFlow {
                     fragment_style.font_size = font_size.into();
                     fragment_style.line_height = fragment_size.height.into();
                     fragment_style.white_space = WhiteSpace::Nowrap;
-                    let mut element = Inline::new(
+                    if let Some(reference) = reference.as_ref().filter(|_| *clamped) {
+                        fragment_style.text_overflow = Some(if reference.link.truncate_start {
+                            gpui::TextOverflow::TruncateStart(ELLIPSIS)
+                        } else {
+                            gpui::TextOverflow::Truncate(ELLIPSIS)
+                        });
+                    }
+                    let inline = Inline::new(
                         state,
-                        links.clone(),
+                        // A chip answers its clicks itself.
+                        if reference.is_some() {
+                            Vec::new()
+                        } else {
+                            links.clone()
+                        },
                         highlights.clone(),
                         self.link_click_handler.clone(),
                     )
-                    .selection_source(source_state.clone(), source_range.clone())
+                    .selection_source(source_state.clone(), selection_range)
+                    .atomic_selection(atomic)
                     .range_backgrounds(slice_ranges(
                         backgrounds,
                         source_range.start,
@@ -668,9 +713,34 @@ impl Element for InlineFlow {
                     .selection_bounds(Bounds::new(
                         point(bounds.left(), bounds.top() + selection_bounds.top()),
                         size(bounds.size.width, selection_bounds.size.height),
-                    ))
-                    .paint_origin(bounds.origin + origin + point(left, Pixels::ZERO))
-                    .into_any_element();
+                    ));
+                    let (mut element, element_origin, element_size) =
+                        match (reference, links.first()) {
+                            (Some(reference), Some((_, link))) => (
+                                super::inline_link::element(
+                                    inline,
+                                    &reference.link,
+                                    link,
+                                    fragment_size,
+                                    fragment_ix,
+                                    self.link_click_handler.clone(),
+                                    self.link_secondary_click.clone(),
+                                    link_tooltip.clone(),
+                                    self.default_cursor,
+                                ),
+                                bounds.origin + origin,
+                                fragment_size,
+                            ),
+                            _ => (
+                                inline
+                                    .paint_origin(
+                                        bounds.origin + origin + point(left, Pixels::ZERO),
+                                    )
+                                    .into_any_element(),
+                                bounds.origin + origin + point(left, Pixels::ZERO),
+                                size(fragment_size.width - left - right, fragment_size.height),
+                            ),
+                        };
                     // The `Inline` is its own layout root, with no box around
                     // it: its text measures with the window's text style, so
                     // the fragment's style is pushed for the layout.
@@ -679,12 +749,10 @@ impl Element for InlineFlow {
                             Some(fragment_style.subtract(&Default::default())),
                             |window| {
                                 element.prepaint_as_root(
-                                    bounds.origin + origin + point(left, Pixels::ZERO),
+                                    element_origin,
                                     size(
-                                        AvailableSpace::Definite(
-                                            fragment_size.width - left - right,
-                                        ),
-                                        AvailableSpace::Definite(fragment_size.height),
+                                        AvailableSpace::Definite(element_size.width),
+                                        AvailableSpace::Definite(element_size.height),
                                     ),
                                     window,
                                     cx,
@@ -810,11 +878,13 @@ impl From<&InlineFlowItem> for MeasureItem {
                 text,
                 links,
                 highlights,
+                reference,
                 ..
             } => MeasureItem::Text {
                 text: text.clone(),
                 links: links.clone(),
                 highlights: highlights.clone(),
+                reference: reference.as_ref().map(|reference| reference.link.clone()),
             },
             InlineFlowItem::Image {
                 source,
@@ -847,13 +917,20 @@ impl MeasureItem {
                     text,
                     links,
                     highlights,
+                    reference,
                 },
                 MeasureItem::Text {
                     text: other_text,
                     links: other_links,
                     highlights: other_highlights,
+                    reference: other_reference,
                 },
-            ) => text == other_text && links == other_links && highlights == other_highlights,
+            ) => {
+                text == other_text
+                    && links == other_links
+                    && highlights == other_highlights
+                    && reference == other_reference
+            }
             (
                 MeasureItem::Image { width, height, .. },
                 MeasureItem::Image {
@@ -1031,6 +1108,45 @@ fn layout_measured_flow(
                     text,
                     links,
                     highlights,
+                    reference: Some(reference),
+                } => {
+                    // A reference is one piece: its icon, the gap, and its
+                    // label, narrowed to the line when it is wider than it.
+                    let runs = text_runs(text.len(), text_style, highlights);
+                    let shaped_line = shape_line(text.clone(), font_size, &runs, window);
+                    let natural = shaped_line.width() + reference.icon_size + reference.gap;
+                    let clamped = wrap_width.is_some_and(|wrap_width| natural > wrap_width);
+                    let width = match wrap_width {
+                        Some(wrap_width) if clamped => wrap_width,
+                        _ => natural,
+                    };
+                    let glyph_size = size(width, shaped_line.ascent + shaped_line.descent);
+                    let baseline = shaped_line.ascent;
+                    line_ascent = line_ascent.max(baseline - body_overflow_above);
+                    line_descent =
+                        line_descent.max(glyph_size.height - baseline - body_overflow_below);
+                    line_width += width;
+                    line_fragments.push(LineFragmentLayout {
+                        item_ix,
+                        kind: LineFragmentKind::Text {
+                            font_size,
+                            text: text.clone(),
+                            links: links.clone(),
+                            highlights: highlights.clone(),
+                            code_background: None,
+                            chip: None,
+                            clamped,
+                        },
+                        size: glyph_size,
+                        source_range: 0..text.len(),
+                        baseline,
+                    });
+                }
+                MeasureItem::Text {
+                    text,
+                    links,
+                    highlights,
+                    reference: None,
                 } => {
                     let local_start = line_range.start.max(item_start) - item_start;
                     let local_end = line_range.end.min(item_end) - item_start;
@@ -1134,6 +1250,7 @@ fn layout_measured_flow(
                                 highlights,
                                 code_background,
                                 chip,
+                                clamped: false,
                             },
                             size: glyph_size,
                             source_range: start..end,
@@ -1213,7 +1330,9 @@ fn layout_measured_flow(
                     highlights,
                     code_background,
                     chip,
+                    clamped,
                 } => PositionedFragment::Text {
+                    clamped,
                     item_ix: fragment.item_ix,
                     origin,
                     size: fragment.size,
@@ -1408,6 +1527,27 @@ fn line_ranges(
             let item_end = item_start + item.len();
             if item_end > hard_line.start && item_start < hard_line.end {
                 match item {
+                    MeasureItem::Text {
+                        text,
+                        highlights,
+                        reference: Some(reference),
+                        ..
+                    } => {
+                        let runs = text_runs(text.len(), text_style, highlights);
+                        let width = window
+                            .text_system()
+                            .layout_line(
+                                text,
+                                text_style.font_size.to_pixels(window.rem_size()),
+                                &runs,
+                                None,
+                            )
+                            .width
+                            + reference.icon_size
+                            + reference.gap;
+                        wrap_fragments
+                            .push(WrapLineFragment::element(width.min(wrap_width), text.len()));
+                    }
                     MeasureItem::Text {
                         text, highlights, ..
                     } => {

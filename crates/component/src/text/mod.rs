@@ -9,10 +9,10 @@ pub use compat::{
 };
 pub use frontmatter::FrontmatterPlugin;
 pub use gpui_base::text::{
-    CodeBlock, InlineCodeStyle, InlineElement, InlineRenderContext, MarkdownBlockParserFn,
-    MarkdownBlockRenderFn, MarkdownExtensions, MarkdownNode, MarkdownParseContext, MarkdownPlugin,
-    RangeHighlight, RangeHighlightError, RenderedText, SelectionFormat, TableData, TextViewMotion,
-    TextViewState, markdown_ast,
+    CodeBlock, InlineCodeStyle, InlineElement, InlineLink, InlineRenderContext,
+    MarkdownBlockParserFn, MarkdownBlockRenderFn, MarkdownExtensions, MarkdownNode,
+    MarkdownParseContext, MarkdownPlugin, RangeHighlight, RangeHighlightError, RenderedText,
+    SelectionFormat, TableData, TextViewMotion, TextViewState, markdown_ast,
 };
 pub use style::TextViewStyle;
 
@@ -63,7 +63,11 @@ pub(crate) fn base_text_view_style(theme: &crate::Theme) -> gpui_base::TextViewS
 }
 
 pub(crate) fn install_text_view_defaults(theme: &crate::Theme, cx: &mut gpui::App) {
-    let defaults = gpui_base::TextViewDefaults::new().with_style(base_text_view_style(theme));
+    let defaults = gpui_base::TextViewDefaults::new()
+        .with_style(base_text_view_style(theme))
+        .with_link_tooltip(|title, window, cx| {
+            crate::tooltip::Tooltip::new(title).build(window, cx)
+        });
 
     #[cfg(feature = "tree-sitter")]
     let defaults = defaults.with_code_block_highlighter(component_code_block_highlighter(

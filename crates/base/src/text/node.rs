@@ -2033,6 +2033,7 @@ pub(crate) struct NodeContext {
     pub(crate) image_source: Option<Arc<super::text_view::ImageSourceFn>>,
     pub(crate) link_click_handler: Option<Arc<LinkClickHandlerFn>>,
     pub(crate) link_secondary_click: Option<Arc<super::text_view::LinkSecondaryClickFn>>,
+    pub(crate) link_presentation: Option<Arc<super::inline_link::LinkPresentationFn>>,
     pub(crate) markdown_extensions: Arc<MarkdownExtensions>,
     /// This frame's streamed fade-in, when any text is still fading.
     pub(crate) stream_fade: Option<Arc<StreamFadeFrame>>,
@@ -2420,6 +2421,13 @@ impl Paragraph {
                 .children
                 .iter()
                 .any(|child| child.marks.iter().any(|(_, mark)| mark.code))
+            // A link a host may present as a reference chip needs the flow,
+            // which is what lays a chip out as one piece of the line.
+            || node_cx.link_presentation.is_some()
+                && self
+                    .children
+                    .iter()
+                    .any(|child| child.marks.iter().any(|(_, mark)| mark.link.is_some()))
             // A paragraph that names a colour needs the per-fragment flow,
             // which is what can reserve the room a swatch is painted in.
             || node_cx.style.prose_swatch().is_some()
@@ -2464,6 +2472,8 @@ impl Paragraph {
                         highlights: fade_highlights(std::mem::take(&mut highlights), &item_fades),
                         backgrounds: item_backgrounds,
                         reveal: item_reveal,
+                        source_offset: 0,
+                        reference: None,
                     });
                 }
                 let mut object_style = HighlightStyle::default();
@@ -2525,6 +2535,8 @@ impl Paragraph {
                             consumed + text.len(),
                         ),
                         reveal: node_cx.reveal_at(leaf_key, consumed, consumed + text.len()),
+                        source_offset: 0,
+                        reference: None,
                     });
                 }
 
@@ -2589,9 +2601,14 @@ impl Paragraph {
                 highlights,
                 backgrounds,
                 reveal,
+                source_offset: 0,
+                reference: None,
             });
         }
 
+        if let Some(resolve) = &node_cx.link_presentation {
+            items = super::inline_link::split_references(items, resolve.as_ref());
+        }
         if let Some(prose) = node_cx.style.prose_swatch() {
             super::inline_code::add_prose_swatches(&mut items, prose);
         }
@@ -2706,7 +2723,8 @@ fn measure_table_columns(
             // A cell laid out as a flow with a host's chips or swatches is
             // measured by the flow itself, since only it knows their edges.
             let chips = (node_cx.style.inline_code_style().is_some()
-                || node_cx.style.prose_swatch().is_some())
+                || node_cx.style.prose_swatch().is_some()
+                || node_cx.link_presentation.is_some())
                 && cell.children.should_render_inline_flow(node_cx);
             if chips
                 || cell

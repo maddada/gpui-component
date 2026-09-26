@@ -33,6 +33,7 @@ pub(crate) type CodeBlockWrapFn = dyn Fn(&CodeBlock) -> bool + Send + Sync;
 pub struct TextViewDefaults {
     style: Option<TextViewStyle>,
     code_block_highlighter: Option<Arc<CodeBlockHighlighterFn>>,
+    pub(crate) link_tooltip: Option<Arc<super::inline_link::LinkTooltipFn>>,
 }
 
 impl Global for TextViewDefaults {}
@@ -55,6 +56,17 @@ impl TextViewDefaults {
         F: Fn(&CodeBlock) -> Vec<(Range<usize>, gpui::HighlightStyle)> + Send + Sync + 'static,
     {
         self.code_block_highlighter = Some(Arc::new(highlighter));
+        self
+    }
+
+    /// Sets how a reference chip
+    /// ([`TextView::link_presentation`]) shows its title as a tooltip. Base
+    /// draws no tooltip without it.
+    pub fn with_link_tooltip<F>(mut self, tooltip: F) -> Self
+    where
+        F: Fn(SharedString, &mut Window, &mut App) -> gpui::AnyView + Send + Sync + 'static,
+    {
+        self.link_tooltip = Some(Arc::new(tooltip));
         self
     }
 
@@ -152,6 +164,7 @@ pub struct TextView {
     table_actions: Option<Arc<TableActionsFn>>,
     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
     link_secondary_click: Option<Arc<LinkSecondaryClickFn>>,
+    link_presentation: Option<Arc<super::inline_link::LinkPresentationFn>>,
     image_source: Option<Arc<ImageSourceFn>>,
     reveal_handler: Option<Rc<RevealHandlerFn>>,
     markdown_extensions: Arc<MarkdownExtensions>,
@@ -201,6 +214,7 @@ impl TextView {
             table_actions: None,
             link_click_handler: None,
             link_secondary_click: None,
+            link_presentation: None,
             image_source: None,
             reveal_handler: None,
             markdown_extensions: Arc::default(),
@@ -227,6 +241,7 @@ impl TextView {
             table_actions: None,
             link_click_handler: None,
             link_secondary_click: None,
+            link_presentation: None,
             image_source: None,
             reveal_handler: None,
             markdown_extensions: Arc::default(),
@@ -253,6 +268,7 @@ impl TextView {
             table_actions: None,
             link_click_handler: None,
             link_secondary_click: None,
+            link_presentation: None,
             image_source: None,
             reveal_handler: None,
             markdown_extensions: Arc::default(),
@@ -429,6 +445,19 @@ impl TextView {
         F: Fn(&str, gpui::Modifiers, &mut Window, &mut App) + Send + Sync + 'static,
     {
         self.link_secondary_click = Some(Arc::new(handler));
+        self
+    }
+
+    /// Draw some links as reference chips: `resolve` receives each link's URL
+    /// and its text and returns the [`InlineLink`](super::InlineLink) to draw
+    /// in its place (an icon and a coloured label, one piece of the line that
+    /// ellipsizes when it is wider than the line), or `None` to leave the link
+    /// as it is. Clicks still go to [`Self::on_link_click`].
+    pub fn link_presentation<F>(mut self, resolve: F) -> Self
+    where
+        F: Fn(&str, &str) -> Option<super::InlineLink> + Send + Sync + 'static,
+    {
+        self.link_presentation = Some(Arc::new(resolve));
         self
     }
 
@@ -691,6 +720,7 @@ impl Element for TextView {
             state.table_actions = self.table_actions.clone();
             state.link_click_handler = self.link_click_handler.clone();
             state.link_secondary_click = self.link_secondary_click.clone();
+            state.link_presentation = self.link_presentation.clone();
             state.image_source = self.image_source.clone();
             state.set_markdown_extensions(self.markdown_extensions.clone(), cx);
             if let Some(motion) = &self.motion {
