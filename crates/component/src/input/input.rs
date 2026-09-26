@@ -131,6 +131,9 @@ pub struct Input {
     role: RoleOverride,
     accessibility_id: Option<SharedString>,
     aria_label: Option<SharedString>,
+    placeholder_color: Option<Hsla>,
+    scrollbar_thickness: Option<gpui::Pixels>,
+    scrollbar_show: Option<crate::scroll::ScrollbarMode>,
 
     /// An optional context menu builder to allow a custom context menu on the input.
     ///
@@ -234,6 +237,9 @@ impl Input {
             role: RoleOverride::default(),
             accessibility_id: None,
             aria_label: None,
+            placeholder_color: None,
+            scrollbar_thickness: None,
+            scrollbar_show: None,
             context_menu_builder: None,
             paste_handler: None,
             token_renderer: None,
@@ -259,6 +265,28 @@ impl Input {
 
     pub fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
         self.aria_label = Some(label.into());
+        self
+    }
+
+    /// Override the placeholder color independently of the input text.
+    pub fn placeholder_color(mut self, color: impl Into<Hsla>) -> Self {
+        self.placeholder_color = Some(color.into());
+        self
+    }
+
+    /// Set the track and thumb thickness of the multi-line scrollbar.
+    ///
+    /// A custom thickness uses the full track width without the default inset,
+    /// and the thumb keeps it on hover. Unset keeps the scrollbar's own metrics.
+    pub fn scrollbar_thickness(mut self, thickness: impl Into<gpui::Pixels>) -> Self {
+        self.scrollbar_thickness = Some(thickness.into());
+        self
+    }
+
+    /// Set when the multi-line scrollbar shows, overriding the theme's
+    /// [`ScrollbarMode`](crate::scroll::ScrollbarMode).
+    pub fn scrollbar_show(mut self, mode: crate::scroll::ScrollbarMode) -> Self {
+        self.scrollbar_show = Some(mode);
         self
     }
 
@@ -584,6 +612,8 @@ impl RenderOnce for Input {
         state.set_disabled(self.disabled, cx);
         state.set_readonly(self.readonly, cx);
         state.set_text_align(text_align, cx);
+        state.set_placeholder_color(self.placeholder_color, cx);
+        state.set_editor_scrollbar(self.scrollbar_thickness, self.scrollbar_show, cx);
         let custom = self.context_menu_builder.clone();
         state.on_context_menu(
             Rc::new(move |_, capabilities, position, window, cx| {

@@ -118,6 +118,21 @@ impl TextInputState {
             .update(cx, |state, _| state.set_editor_paddings(paddings)))
     }
 
+    pub(crate) fn set_placeholder_color(&self, color: Option<gpui::Hsla>, cx: &mut App) {
+        dispatch!(self, |state| state
+            .update(cx, |state, _| state.set_placeholder_color(color)))
+    }
+
+    pub(crate) fn set_editor_scrollbar(
+        &self,
+        thickness: Option<gpui::Pixels>,
+        mode: Option<crate::scroll::ScrollbarMode>,
+        cx: &mut App,
+    ) {
+        dispatch!(self, |state| state.update(cx, |state, _| state
+            .set_editor_scrollbar(thickness, mode)))
+    }
+
     pub(crate) fn ensure_highlighter_factory(
         &self,
         factory: gpui_base::input::InputHighlighterFactory,

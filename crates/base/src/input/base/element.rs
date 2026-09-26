@@ -250,8 +250,18 @@ impl<M: InputModeKind> Element for EditorScrollbar<M> {
             Scrollbar::vertical(&scroll_handle)
         }
         .viewport_bounds(snapshot.layout.bounds)
-        .scroll_size(snapshot.layout.scroll_size)
-        .into_any_element();
+        .scroll_size(snapshot.layout.scroll_size);
+        if let Some(mode) = state.editor_scrollbar_mode {
+            scrollbar = scrollbar.mode(mode);
+        }
+        if let Some(thickness) = state.editor_scrollbar_thickness {
+            scrollbar = scrollbar.styles(|styles| {
+                styles
+                    .track(|track| track.width(thickness))
+                    .thumb(|thumb| thumb.width(thickness).inset(px(0.)).radius(thickness / 2.))
+            });
+        }
+        let mut scrollbar = scrollbar.into_any_element();
 
         scrollbar.prepaint_as_root(
             snapshot.layout.bounds.origin,
@@ -2415,7 +2425,9 @@ impl<M: InputModeKind> Element for TextElement<M> {
         let (display_text, text_color) = if is_empty {
             (
                 &Rope::from(placeholder.as_str()),
-                dim(state.editor_style.muted_foreground),
+                dim(state
+                    .placeholder_color
+                    .unwrap_or(state.editor_style.muted_foreground)),
             )
         } else if state.masked {
             (

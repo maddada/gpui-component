@@ -411,6 +411,10 @@ pub struct InputBaseState<M: InputModeKind> {
     /// The size of the scrollable content.
     pub(crate) scroll_size: gpui::Size<Pixels>,
     pub(super) editor_scrollbar_snapshot: Cell<Option<EditorScrollbarSnapshot>>,
+    /// Track and thumb thickness of the multi-line scrollbar, when a host set one.
+    pub(super) editor_scrollbar_thickness: Option<Pixels>,
+    /// Reveal mode of the multi-line scrollbar, overriding the theme's.
+    pub(super) editor_scrollbar_mode: Option<crate::ScrollbarMode>,
     pub(super) editor_paddings: Edges<Pixels>,
     /// The style this state paints with: what was projected onto it, with
     /// every colour left unset resolved from the palette that is current. It
@@ -430,6 +434,8 @@ pub struct InputBaseState<M: InputModeKind> {
     /// its default mask when the user has not made an explicit choice.
     pub(super) mask_pattern_set: bool,
     pub(super) placeholder: SharedString,
+    /// Placeholder color that overrides the editor style's muted foreground.
+    pub(super) placeholder_color: Option<gpui::Hsla>,
 
     /// Diagnostic currently requested by pointer hover; applications render it.
     pub(super) diagnostic_popover: Option<Rc<crate::input::DiagnosticEntry>>,
@@ -741,9 +747,12 @@ impl<M: InputModeKind> InputBaseState<M> {
             scroll_handle: ScrollHandle::new(),
             scroll_size: gpui::size(px(0.), px(0.)),
             editor_scrollbar_snapshot: Cell::new(None),
+            editor_scrollbar_thickness: None,
+            editor_scrollbar_mode: None,
             editor_paddings: Edges::default(),
             deferred_scroll_offset: None,
             placeholder: SharedString::default(),
+            placeholder_color: None,
             mask_pattern: MaskPattern::default(),
             mask_pattern_set: false,
             editor_style: InputEditorStyle::default(),
@@ -845,6 +854,29 @@ impl<M: InputModeKind> InputBaseState<M> {
     #[doc(hidden)]
     pub fn set_editor_paddings(&mut self, paddings: Edges<Pixels>) {
         self.editor_paddings = paddings;
+    }
+
+    /// Set the placeholder color, `None` for the editor style's muted
+    /// foreground. Styled controls call this from their render.
+    #[doc(hidden)]
+    pub fn set_placeholder_color(&mut self, color: Option<gpui::Hsla>) {
+        self.placeholder_color = color;
+    }
+
+    /// Set the thickness and reveal mode of the multi-line scrollbar, `None`
+    /// for the scrollbar's own metrics and the theme's mode. Styled controls
+    /// call this from their render.
+    ///
+    /// A thickness is used for the track and the thumb alike, without the
+    /// default inset, and the thumb does not widen on hover.
+    #[doc(hidden)]
+    pub fn set_editor_scrollbar(
+        &mut self,
+        thickness: Option<Pixels>,
+        mode: Option<crate::ScrollbarMode>,
+    ) {
+        self.editor_scrollbar_thickness = thickness;
+        self.editor_scrollbar_mode = mode;
     }
 
     pub fn apply_highlighter_fold_candidates(

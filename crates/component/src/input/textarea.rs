@@ -26,6 +26,9 @@ pub struct Textarea {
     role: RoleOverride,
     accessibility_id: Option<SharedString>,
     aria_label: Option<SharedString>,
+    placeholder_color: Option<gpui::Hsla>,
+    scrollbar_thickness: Option<gpui::Pixels>,
+    scrollbar_show: Option<crate::scroll::ScrollbarMode>,
 
     /// An optional context menu builder to allow a custom context menu.
     ///
@@ -71,6 +74,9 @@ impl Textarea {
             role: RoleOverride::default(),
             accessibility_id: None,
             aria_label: None,
+            placeholder_color: None,
+            scrollbar_thickness: None,
+            scrollbar_show: None,
             context_menu_builder: None,
             paste_handler: None,
             token_renderer: None,
@@ -126,6 +132,26 @@ impl Textarea {
 
     pub fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
         self.aria_label = Some(label.into());
+        self
+    }
+
+    /// Override the placeholder color independently of the text.
+    pub fn placeholder_color(mut self, color: impl Into<gpui::Hsla>) -> Self {
+        self.placeholder_color = Some(color.into());
+        self
+    }
+
+    /// Set the track and thumb thickness of the scrollbar. See
+    /// [`Input::scrollbar_thickness`].
+    pub fn scrollbar_thickness(mut self, thickness: impl Into<gpui::Pixels>) -> Self {
+        self.scrollbar_thickness = Some(thickness.into());
+        self
+    }
+
+    /// Set when the scrollbar shows, overriding the theme's
+    /// [`ScrollbarMode`](crate::scroll::ScrollbarMode).
+    pub fn scrollbar_show(mut self, mode: crate::scroll::ScrollbarMode) -> Self {
+        self.scrollbar_show = Some(mode);
         self
     }
 
@@ -190,6 +216,13 @@ impl Textarea {
             .when_some(self.height, |this, height| this.h(height))
             .when_some(self.accessibility_id, |this, id| this.accessibility_id(id))
             .when_some(self.aria_label, |this, label| this.aria_label(label))
+            .when_some(self.placeholder_color, |this, color| {
+                this.placeholder_color(color)
+            })
+            .when_some(self.scrollbar_thickness, |this, thickness| {
+                this.scrollbar_thickness(thickness)
+            })
+            .when_some(self.scrollbar_show, |this, mode| this.scrollbar_show(mode))
             .when_some(self.context_menu_builder, |this, build| {
                 this.context_menu(move |menu, window, cx| build(menu, window, cx))
             })
