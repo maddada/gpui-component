@@ -1557,15 +1557,18 @@ impl<M: InputModeKind> TextElement<M> {
         cx: &mut App,
     ) -> std::collections::HashMap<usize, AnyElement> {
         let style = window.text_style();
+        let font_size = style.font_size.to_pixels(window.rem_size());
         let state = self.state.read(cx);
         let key = (
             style.font(),
-            style.font_size.to_pixels(window.rem_size()),
+            font_size,
             width,
             line_height,
             state.is_single_line() || !state.soft_wrap,
         );
-        if !state.tokens_visible() {
+        let tokens_visible = state.tokens_visible();
+        let replacements_visible = state.inline_replacements_visible();
+        if !tokens_visible && !replacements_visible {
             if state.token_layout_cache.is_none() {
                 return Default::default();
             }
@@ -1575,6 +1578,7 @@ impl<M: InputModeKind> TextElement<M> {
             return Default::default();
         }
         let revision = state.document_revision;
+        let replacement_revision = state.inline_replacements.revision();
         let cache = state.token_layout_cache.as_ref();
         let all = cache.is_none_or(|cache| {
             cache.key.as_ref() != Some(&key)
@@ -1587,7 +1591,11 @@ impl<M: InputModeKind> TextElement<M> {
         let (visible, _, _) = self.calculate_visible_range(state, line_height, viewport);
         let start = state.text.line_start_offset(visible.start);
         let end = state.text.line_end_offset(visible.end.saturating_sub(1));
-        let spans = state.token_spans();
+        let spans = if tokens_visible {
+            state.token_spans()
+        } else {
+            &[]
+        };
         let first = if all {
             0
         } else {
@@ -1605,6 +1613,16 @@ impl<M: InputModeKind> TextElement<M> {
             })
             .map(|span| state.token_context(span, line_height, width))
             .collect();
+        let replacements = if !replacements_visible {
+            Rc::from([])
+        } else if let Some(cache) = cache.filter(|cache| {
+            cache.key.as_ref() == Some(&key)
+                && cache.replacement_revision == Some(replacement_revision)
+        }) {
+            cache.replacements.clone()
+        } else {
+            Self::measure_inline_replacements(state, &style, font_size, width, window, cx)
+        };
         let mut elements = std::collections::HashMap::new();
         let mut measured = Vec::new();
         for token in contexts {
@@ -1630,13 +1648,22 @@ impl<M: InputModeKind> TextElement<M> {
                 changed |= cache.widths.get(&token) != Some(&width);
                 cache.widths.insert(token, width);
             }
+            changed |= cache.replacements != replacements;
+            cache.replacements = replacements;
+            cache.replacement_revision = replacements_visible.then_some(replacement_revision);
             cache.key = Some(key);
             if changed {
-                let spans = state.token_spans();
+                let spans = if tokens_visible {
+                    state.token_spans()
+                } else {
+                    &[]
+                };
                 let tokens: std::collections::HashSet<_> =
                     spans.iter().map(|s| s.token()).collect();
                 cache.widths.retain(|token, _| tokens.contains(token));
-                cache.metrics = spans
+                // Tokens and replacements are disjoint, so one ordered list
+                // describes every atomic object to the wrapper.
+                let mut metrics: Vec<(Range<usize>, Pixels)> = spans
                     .iter()
                     .filter_map(|span| {
                         cache
@@ -1644,16 +1671,36 @@ impl<M: InputModeKind> TextElement<M> {
                             .get(span.token())
                             .map(|width| (span.range(), *width))
                     })
+                    .chain(
+                        cache
+                            .replacements
+                            .iter()
+                            .map(|replacement| (replacement.range.clone(), replacement.width)),
+                    )
                     .collect();
+                metrics.sort_by_key(|(range, _)| range.start);
+                cache.metrics = metrics.into();
                 cache.revision = revision;
                 if state.is_single_line() || !state.soft_wrap {
-                    let mut rows: Vec<_> = spans
+                    let metrics = cache.metrics.clone();
+                    let mut rows: Vec<_> = metrics
                         .iter()
-                        .map(|s| state.text.offset_to_point(s.range().start).row)
+                        .map(|(range, _)| state.text.offset_to_point(range.start).row)
                         .collect();
                     rows.push(state.display_map.longest_row());
                     rows.sort_unstable();
                     rows.dedup();
+                    let shaped_width = |part: &str, window: &mut Window| {
+                        window
+                            .text_system()
+                            .shape_line(
+                                part.to_owned().into(),
+                                font_size,
+                                &[style.to_run(part.len())],
+                                None,
+                            )
+                            .width
+                    };
                     cache.unwrapped_width = rows
                         .into_iter()
                         .map(|row| {
@@ -1661,37 +1708,17 @@ impl<M: InputModeKind> TextElement<M> {
                             let text = state.text.slice_line(row).to_string();
                             let mut offset = 0;
                             let mut width = px(0.);
-                            let first = spans.partition_point(|s| s.range().end <= start);
-                            for span in spans[first..]
+                            let first = metrics.partition_point(|(range, _)| range.end <= start);
+                            for (range, object_width) in metrics[first..]
                                 .iter()
-                                .take_while(|s| s.range().start < start + text.len())
+                                .take_while(|(range, _)| range.start < start + text.len())
                             {
-                                let local = span.range().start - start..span.range().end - start;
-                                let part = &text[offset..local.start];
-                                width += window
-                                    .text_system()
-                                    .shape_line(
-                                        part.to_owned().into(),
-                                        style.font_size.to_pixels(window.rem_size()),
-                                        &[style.to_run(part.len())],
-                                        None,
-                                    )
-                                    .width;
-                                width +=
-                                    cache.widths.get(span.token()).copied().unwrap_or_default();
+                                let local = range.start - start..range.end - start;
+                                width += shaped_width(&text[offset..local.start], window);
+                                width += *object_width;
                                 offset = local.end;
                             }
-                            let part = &text[offset..];
-                            width
-                                + window
-                                    .text_system()
-                                    .shape_line(
-                                        part.to_owned().into(),
-                                        style.font_size.to_pixels(window.rem_size()),
-                                        &[style.to_run(part.len())],
-                                        None,
-                                    )
-                                    .width
+                            width + shaped_width(&text[offset..], window)
                         })
                         .max()
                         .unwrap_or_default();
@@ -1711,6 +1738,49 @@ impl<M: InputModeKind> TextElement<M> {
         elements
     }
 
+    /// Measure every inline replacement in the base font. A replacement wider
+    /// than a row is ellipsized to fit it, the way a reference chip is in the
+    /// transcript, instead of overflowing the input.
+    fn measure_inline_replacements(
+        state: &InputBaseState<M>,
+        style: &TextStyle,
+        font_size: Pixels,
+        width: Pixels,
+        window: &mut Window,
+        cx: &App,
+    ) -> Rc<[super::inline_replacement::InlineReplacementLayout]> {
+        state
+            .inline_replacements
+            .spans()
+            .iter()
+            .map(|replacement| {
+                let shape = |text: &SharedString, window: &mut Window| {
+                    window
+                        .text_system()
+                        .shape_line(text.clone(), font_size, &[style.to_run(text.len())], None)
+                        .width
+                };
+                let mut text = replacement.text.clone();
+                let mut text_width = shape(&text, window);
+                if text_width > width {
+                    let runs = [style.to_run(text.len())];
+                    let (truncated, _) = cx
+                        .text_system()
+                        .line_wrapper(style.font(), font_size)
+                        .truncate_line(text.clone(), width, "…", &runs, gpui::TruncateFrom::End);
+                    text = truncated;
+                    text_width = shape(&text, window);
+                }
+                super::inline_replacement::InlineReplacementLayout {
+                    range: replacement.range.clone(),
+                    text,
+                    width: text_width.max(px(1.)),
+                    color: replacement.color,
+                }
+            })
+            .collect()
+    }
+
     fn layout_token_lines(
         state: &InputBaseState<M>,
         last_layout: &LastLayout,
@@ -1719,11 +1789,39 @@ impl<M: InputModeKind> TextElement<M> {
         window: &mut Window,
     ) -> Vec<LineLayout> {
         use crate::input::display_map::{InlineFragment, InputLine};
-        let spans = state.token_spans();
         let cache = state
             .token_layout_cache
             .as_ref()
             .expect("tokens measured before shaping");
+        /// An atomic object on a row: a slot an element is painted over, or
+        /// the text a replacement draws.
+        enum InlineObject<'a> {
+            Token(&'a super::InlineToken),
+            Replacement(&'a super::inline_replacement::InlineReplacementLayout),
+        }
+        let mut objects: Vec<(Range<usize>, InlineObject)> = if state.tokens_visible() {
+            state
+                .token_spans()
+                .iter()
+                .map(|span| (span.range(), InlineObject::Token(span.token())))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        objects.extend(cache.replacements.iter().map(|replacement| {
+            (
+                replacement.range.clone(),
+                InlineObject::Replacement(replacement),
+            )
+        }));
+        objects.sort_by_key(|(range, _)| range.start);
+        let dim = |color: Hsla| {
+            if state.disabled {
+                color.opacity(0.5)
+            } else {
+                color
+            }
+        };
         let mut run_offset = 0;
         last_layout
             .visible_buffer_lines
@@ -1746,13 +1844,13 @@ impl<M: InputModeKind> TextElement<M> {
                     let mut fragments = Vec::new();
                     let mut offset = range.start;
                     let mut x = px(0.);
-                    let first =
-                        spans.partition_point(|s| s.range().end <= line_start + range.start);
-                    for span in spans[first..]
+                    let first = objects
+                        .partition_point(|(object, _)| object.end <= line_start + range.start);
+                    for (object, kind) in objects[first..]
                         .iter()
-                        .take_while(|s| s.range().start < line_start + range.end)
+                        .take_while(|(object, _)| object.start < line_start + range.end)
                     {
-                        let local = span.range().start - line_start..span.range().end - line_start;
+                        let local = object.start - line_start..object.end - line_start;
                         if offset < local.start {
                             let part = offset..local.start;
                             let shaped = window.text_system().shape_line(
@@ -1767,15 +1865,47 @@ impl<M: InputModeKind> TextElement<M> {
                                 x,
                                 width,
                                 text: Some(shaped),
+                                atomic: false,
                             });
                             x += width;
                         }
-                        let width = cache.widths.get(span.token()).copied().unwrap_or_default();
+                        let (width, shaped) = match kind {
+                            InlineObject::Token(token) => {
+                                (cache.widths.get(*token).copied().unwrap_or_default(), None)
+                            }
+                            InlineObject::Replacement(replacement) => {
+                                // The replacement text in the source's font, in
+                                // its own color.
+                                let mut run = runs_for_range(
+                                    runs,
+                                    run_offset,
+                                    &(local.start..local.start + 1),
+                                )
+                                .into_iter()
+                                .next()
+                                .unwrap_or_else(|| window.text_style().to_run(0));
+                                run.len = replacement.text.len();
+                                run.background_color = None;
+                                run.underline = None;
+                                run.strikethrough = None;
+                                if let Some(color) = replacement.color {
+                                    run.color = dim(color);
+                                }
+                                let shaped = window.text_system().shape_line(
+                                    replacement.text.clone(),
+                                    font_size,
+                                    &[run],
+                                    None,
+                                );
+                                (replacement.width, Some(shaped))
+                            }
+                        };
                         fragments.push(InlineFragment {
                             range: local.start - range.start..local.end - range.start,
                             x,
                             width,
-                            text: None,
+                            text: shaped,
+                            atomic: true,
                         });
                         x += width;
                         offset = local.end;
@@ -1794,6 +1924,7 @@ impl<M: InputModeKind> TextElement<M> {
                             x,
                             width,
                             text: Some(shaped),
+                            atomic: false,
                         });
                     }
                     lines.push(InputLine::inline(text[range].to_owned().into(), fragments));
@@ -1814,6 +1945,166 @@ impl<M: InputModeKind> TextElement<M> {
                     .wrap_indent(wrap_indent)
             })
             .collect()
+    }
+
+    /// Screen geometry of every inline replacement on a visible row.
+    ///
+    /// Each pill gets a hitbox, which is what turns the pointer into a hand
+    /// over a clickable pill and what tells paint which pill is hovered.
+    fn layout_inline_replacement_pills(
+        &self,
+        layout: &LastLayout,
+        bounds: Bounds<Pixels>,
+        text_size: Pixels,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Vec<InlineReplacementPill> {
+        let state = self.state.read(cx);
+        if !state.inline_replacements_visible() {
+            return vec![];
+        }
+        let style = window.text_style();
+        let dim = |color: Hsla| {
+            if state.disabled {
+                color.opacity(0.5)
+            } else {
+                color
+            }
+        };
+        // CDXC:SessionChat 2026-09-18 WHY: The hover rule sits where Chromium
+        // draws `text-underline-offset: 0.18em`: 0.18em below the baseline of
+        // a line box whose ascent and descent are rounded to whole pixels, and
+        // itself rounded to a whole pixel, so it lands on the row the React
+        // composer drew it on.
+        let font_id = window.text_system().resolve_font(&style.font());
+        let ascent = window.text_system().ascent(font_id, text_size).round();
+        let descent = window.text_system().descent(font_id, text_size).round();
+        let baseline = (layout.line_height - ascent - descent).half() + ascent;
+        let underline_offset = (baseline + text_size * 0.18).round();
+
+        let spans = state.inline_replacements.spans();
+        let mut pills = Vec::new();
+        let mut y = layout.visible_top;
+        for (ix, &row) in layout.visible_buffer_lines.iter().enumerate() {
+            let line = &layout.lines[ix];
+            let start = state.text.line_start_offset(row);
+            let end = state.text.line_end_offset(row);
+            let first = spans.partition_point(|span| span.range.end <= start);
+            for span in spans[first..]
+                .iter()
+                .take_while(|span| span.range.start < end)
+            {
+                // A pill that ends a wrapped row ends on that row, so its end
+                // takes the line-end affinity.
+                let (Some(left), Some(right)) = (
+                    line.position_for_index(span.range.start - start, layout, false),
+                    line.position_for_index(span.range.end - start, layout, true),
+                ) else {
+                    continue;
+                };
+                if left.y != right.y || right.x <= left.x {
+                    continue;
+                }
+                let rect = Bounds::new(
+                    bounds.origin + point(layout.line_number_width, y) + left,
+                    size(right.x - left.x, layout.line_height),
+                );
+                pills.push(InlineReplacementPill {
+                    range: span.range.clone(),
+                    hitbox: window.insert_hitbox(rect, HitboxBehavior::Normal),
+                    bounds: rect,
+                    underline_y: rect.origin.y + underline_offset,
+                    icon: span.icon.clone(),
+                    icon_size: span.icon_size,
+                    icon_inset: span.icon_inset,
+                    color: dim(span.color.unwrap_or(style.color)),
+                    pointer: span.pointer && !state.disabled,
+                    tooltip: span.tooltip.clone(),
+                });
+            }
+            y += line.size(layout.line_height).height;
+        }
+        pills
+    }
+
+    /// Paint the replacements' icons, the hover rule and the pointer cursor,
+    /// and keep the hovered replacement's tooltip in step.
+    fn paint_inline_replacement_pills(
+        &self,
+        pills: &[InlineReplacementPill],
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if pills.is_empty() && self.state.read(cx).inline_replacement_tooltip.is_none() {
+            return;
+        }
+        let line_height = window.line_height();
+        for pill in pills {
+            if pill.pointer {
+                window.set_cursor_style(gpui::CursorStyle::PointingHand, &pill.hitbox);
+            }
+            if let Some(icon) = &pill.icon {
+                _ = window.paint_svg(
+                    Bounds::new(
+                        point(
+                            pill.bounds.origin.x + pill.icon_inset,
+                            pill.bounds.origin.y + (line_height - pill.icon_size).half(),
+                        ),
+                        size(pill.icon_size, pill.icon_size),
+                    ),
+                    icon.clone(),
+                    None,
+                    gpui::TransformationMatrix::unit(),
+                    pill.color,
+                    cx,
+                );
+            }
+            if !pill.hitbox.is_hovered(window) {
+                continue;
+            }
+            // A 1px dotted rule, drawn dot by dot because a text run's
+            // underline is always solid.
+            let mut x = pill.bounds.origin.x;
+            let right = pill.bounds.right();
+            while x < right {
+                window.paint_quad(fill(
+                    Bounds::new(point(x, pill.underline_y), size(px(1.), px(1.))),
+                    pill.color,
+                ));
+                x += px(2.);
+            }
+        }
+
+        // The hitboxes only change what is hovered; a frame has to be drawn
+        // for the hover rule and the tooltip to follow the pointer.
+        let hovered = pills.iter().position(|pill| pill.hitbox.is_hovered(window));
+        let hitboxes: Vec<Hitbox> = pills.iter().map(|pill| pill.hitbox.clone()).collect();
+        let entity_id = self.state.entity_id();
+        window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
+            if phase.bubble()
+                && hitboxes.iter().position(|hitbox| hitbox.is_hovered(window)) != hovered
+            {
+                cx.notify(entity_id);
+            }
+        });
+
+        // A replacement is painted text, not an element that could carry a
+        // tooltip, so the styled control is told which pill's tooltip to show
+        // and drives the window's managed tooltip from the pill's bounds.
+        let shown = hovered.and_then(|ix| {
+            let pill = &pills[ix];
+            Some((pill.tooltip.clone()?, pill.bounds))
+        });
+        let (previous, handler) = self.state.update(cx, |state, _| {
+            if state.inline_replacement_tooltip == shown {
+                return (None, None);
+            }
+            let previous = std::mem::replace(&mut state.inline_replacement_tooltip, shown.clone());
+            (previous, state.inline_replacement_tooltip_handler.clone())
+        });
+        if let Some(handler) = handler {
+            handler(previous, shown, window, cx);
+        }
     }
 
     fn prepaint_tokens(
@@ -1885,7 +2176,7 @@ impl<M: InputModeKind> TextElement<M> {
         window: &mut Window,
     ) -> Vec<LineLayout> {
         let is_single_line = state.is_single_line();
-        if state.tokens_visible() {
+        if state.tokens_visible() || state.inline_replacements_visible() {
             return Self::layout_token_lines(state, last_layout, font_size, runs, window);
         }
 
@@ -2156,10 +2447,25 @@ struct CursorRenderInfo {
     is_active: bool,
 }
 
+/// An inline replacement resolved to screen geometry for one frame.
+struct InlineReplacementPill {
+    range: Range<usize>,
+    hitbox: Hitbox,
+    bounds: Bounds<Pixels>,
+    underline_y: Pixels,
+    icon: Option<SharedString>,
+    icon_size: Pixels,
+    icon_inset: Pixels,
+    color: Hsla,
+    pointer: bool,
+    tooltip: Option<SharedString>,
+}
+
 pub(super) struct PrepaintState {
     /// The lines of entire lines.
     last_layout: LastLayout,
     token_elements: Vec<AnyElement>,
+    inline_replacement_pills: Vec<InlineReplacementPill>,
     /// The lines only contains the visible lines in the viewport, based on `visible_range`.
     ///
     /// The child is the soft lines.
@@ -2630,7 +2936,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 )
                 .width;
         }
-        if state.tokens_visible() {
+        if state.tokens_visible() || state.inline_replacements_visible() {
             longest_line_width = if let Some(width) = wrap_width {
                 width
             } else {
@@ -2810,8 +3116,11 @@ impl<M: InputModeKind> Element for TextElement<M> {
         let hitbox = window.insert_hitbox(input_bounds, HitboxBehavior::Normal);
 
         let token_elements = self.prepaint_tokens(&last_layout, bounds, token_elements, window, cx);
+        let inline_replacement_pills =
+            self.layout_inline_replacement_pills(&last_layout, bounds, text_size, window, cx);
         PrepaintState {
             token_elements,
+            inline_replacement_pills,
             hitbox,
             bounds,
             last_layout,
@@ -3064,6 +3373,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
         for element in &mut prepaint.token_elements {
             element.paint(window, cx);
         }
+        self.paint_inline_replacement_pills(&prepaint.inline_replacement_pills, window, cx);
 
         // Paint blinking cursors (shared blink state for all carets)
         if focused && show_cursor {
@@ -3143,6 +3453,11 @@ impl<M: InputModeKind> Element for TextElement<M> {
                         || layout.line_height != prepaint.last_layout.line_height
                 });
             state.last_layout = Some(prepaint.last_layout.clone());
+            state.inline_replacement_hits = prepaint
+                .inline_replacement_pills
+                .iter()
+                .map(|pill| (pill.range.clone(), pill.bounds))
+                .collect();
             state.last_bounds = Some(bounds);
             state.last_cursor = Some(state.cursor());
             state.set_input_bounds(input_bounds, cx);

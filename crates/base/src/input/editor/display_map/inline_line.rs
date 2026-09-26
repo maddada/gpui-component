@@ -6,7 +6,20 @@ pub(crate) struct InlineFragment {
     pub(crate) range: Range<usize>,
     pub(crate) x: Pixels,
     pub(crate) width: Pixels,
+    /// The glyphs painted for this fragment: its own source text, or, for an
+    /// atomic fragment, the text drawn in place of the source. `None` leaves
+    /// the room to an element painted over it.
     pub(crate) text: Option<ShapedLine>,
+    /// Whether the fragment is one unit for the caret. Offsets inside it
+    /// resolve to its edges, and its glyphs do not index its source.
+    pub(crate) atomic: bool,
+}
+
+impl InlineFragment {
+    /// The shaped source text, when offsets index into it.
+    fn source_text(&self) -> Option<&ShapedLine> {
+        self.text.as_ref().filter(|_| !self.atomic)
+    }
 }
 
 pub(crate) struct InputLine {
@@ -49,7 +62,7 @@ impl InputLine {
                 for f in fragments {
                     if ix < f.range.end {
                         return f.x
-                            + f.text.as_ref().map_or(
+                            + f.source_text().map_or(
                                 if ix <= f.range.start { px(0.) } else { f.width },
                                 |line| line.x_for_index(ix.saturating_sub(f.range.start)),
                             );
@@ -65,7 +78,7 @@ impl InputLine {
             Content::Inline(fragments) => {
                 for f in fragments {
                     if x <= f.x + f.width {
-                        return f.text.as_ref().map_or(
+                        return f.source_text().map_or(
                             if x - f.x < f.width / 2. {
                                 f.range.start
                             } else {

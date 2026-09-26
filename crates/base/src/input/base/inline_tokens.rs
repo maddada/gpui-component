@@ -255,15 +255,23 @@ impl<M: InputModeKind> InputBaseState<M> {
             .as_ref()
             .map_or(&[], |store| &store.spans)
     }
+    /// `offset` moved out of the token or inline replacement it falls
+    /// strictly inside, to its start (`Bias::Left`) or end. Both are atomic
+    /// for the caret, selections and edits.
     pub(super) fn token_boundary(&self, offset: usize, bias: sum_tree::Bias) -> usize {
         let spans = self.token_spans();
         let ix = spans.partition_point(|s| s.range.end <= offset);
-        if let Some(span) = spans.get(ix).filter(|s| s.range.start < offset) {
+        let offset = if let Some(span) = spans.get(ix).filter(|s| s.range.start < offset) {
             if bias == sum_tree::Bias::Left {
                 span.range.start
             } else {
                 span.range.end
             }
+        } else {
+            offset
+        };
+        if self.inline_replacements_visible() {
+            self.inline_replacements.boundary(offset, bias)
         } else {
             offset
         }

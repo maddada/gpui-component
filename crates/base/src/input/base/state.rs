@@ -352,6 +352,14 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(super) document_revision: u64,
     pub(super) token_presentation: super::InlineTokenPresentation,
     pub(super) token_layout_cache: Option<Box<super::token_presentation::TokenLayoutCache>>,
+    /// Host-owned spans drawn as compact pills. See [`super::InlineReplacement`].
+    pub(super) inline_replacements: super::inline_replacement::InlineReplacementStore,
+    /// Source range and window bounds of every replacement the last paint drew.
+    pub(super) inline_replacement_hits: Vec<(Range<usize>, Bounds<Pixels>)>,
+    /// The replacement tooltip being shown, and the pill bounds it is anchored to.
+    pub(super) inline_replacement_tooltip: Option<(SharedString, Bounds<Pixels>)>,
+    pub(super) inline_replacement_tooltip_handler:
+        Option<super::inline_replacement::InlineReplacementTooltipHandler>,
     /// The start offset of a pressed token, with the document revision and
     /// pointer position at the press.
     pub(super) pressed_token: Option<(usize, u64, Point<Pixels>)>,
@@ -718,6 +726,10 @@ impl<M: InputModeKind> InputBaseState<M> {
             document_revision: 0,
             token_presentation: Default::default(),
             token_layout_cache: None,
+            inline_replacements: Default::default(),
+            inline_replacement_hits: Vec::new(),
+            inline_replacement_tooltip: None,
+            inline_replacement_tooltip_handler: None,
             pressed_token: None,
             selections: Selections::default(),
             selected_word_range: None,
@@ -2747,6 +2759,7 @@ impl<M: InputModeKind> InputBaseState<M> {
     ) -> bool {
         self.document_revision = self.document_revision.wrapping_add(1);
         let token_delta = self.edit_tokens(range, new_text.len());
+        self.edit_inline_replacements(range, new_text.len());
         if self.undo_manager.is_ignoring() {
             return false;
         }
@@ -2805,7 +2818,11 @@ impl<M: InputModeKind> InputBaseState<M> {
         let Some(replay) = replay else {
             return;
         };
+        // Replay applies recorded ranges exactly: normalizing them to whole
+        // tokens or replacements would widen an edit that was recorded before
+        // the span existed.
         let token_aware = self.inline_tokens.is_some()
+            || self.inline_replacements_visible()
             || replay
                 .changes
                 .iter()
@@ -3584,7 +3601,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             .map(|(range, text)| (self.normalize_token_range(range.clone()), text.as_str()))
             .collect();
         sorted.sort_by_key(|edit| std::cmp::Reverse(edit.0.start));
-        if !self.token_spans().is_empty() {
+        if !self.token_spans().is_empty() || self.inline_replacements_visible() {
             let mut merged: Vec<(Range<usize>, &str)> = Vec::with_capacity(sorted.len());
             for (range, text) in sorted {
                 if let Some(last) = merged

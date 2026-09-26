@@ -117,8 +117,14 @@ pub(super) struct TokenLayoutCache {
     pub(super) key: Option<(Font, Pixels, Pixels, Pixels, bool)>,
     pub(super) revision: u64,
     pub(super) unwrapped_width: Pixels,
+    /// Width of every atomic inline object, tokens and replacements alike,
+    /// ordered by source range.
     pub(super) metrics: Rc<[(Range<usize>, Pixels)]>,
     pub(super) widths: HashMap<InlineToken, Pixels>,
+    /// The inline replacements as measured for `key`.
+    pub(super) replacements: Rc<[super::inline_replacement::InlineReplacementLayout]>,
+    /// The replacement revision `replacements` was measured at.
+    pub(super) replacement_revision: Option<u64>,
 }
 
 impl<M: InputModeKind> InputBaseState<M> {

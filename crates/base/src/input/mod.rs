@@ -32,11 +32,16 @@ mod element;
 mod highlighting;
 #[path = "editor/indent.rs"]
 mod indent;
+#[path = "base/inline_replacement.rs"]
+mod inline_replacement;
 #[path = "base/inline_tokens.rs"]
 mod inline_tokens;
 mod input;
 #[path = "base/token_presentation.rs"]
 mod token_presentation;
+pub use inline_replacement::InlineReplacement;
+#[doc(hidden)]
+pub use inline_replacement::InlineReplacementTooltipHandler;
 pub use inline_tokens::{InlineToken, InlineTokenError, InlineTokenSpan, InputContent};
 pub(crate) use token_presentation::InlineTokenPresentation;
 pub use token_presentation::{
