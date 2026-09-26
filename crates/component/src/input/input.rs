@@ -104,24 +104,27 @@ const INLINE_REPLACEMENT_TOOLTIP_MAX_WIDTH: gpui::Pixels = px(384.);
 /// The engine reports the pill because a replacement is painted text, not an
 /// element that could carry `.tooltip()` itself.
 fn inline_replacement_tooltip_handler() -> gpui_base::input::InlineReplacementTooltipHandler {
-    Rc::new(|_previous, shown, window, cx| {
-        let Some(overlay) = crate::root::WindowState::tooltip_overlay(window, cx) else {
+    Rc::new(|previous, shown, window, cx| {
+        let Some(overlay) = gpui_base::Root::tooltip_overlay(window, cx) else {
             return;
         };
-        overlay.update(cx, |overlay, cx| match shown {
-            Some((text, bounds)) => {
-                let request = gpui_base::TooltipRequest::new(bounds, move |window, cx| {
-                    crate::tooltip::Tooltip::new(text.clone())
-                        .max_w(INLINE_REPLACEMENT_TOOLTIP_MAX_WIDTH)
-                        .build(window, cx)
-                });
-                overlay.request_show(request, window, cx);
+        overlay.update(cx, |overlay, cx| match (shown, previous) {
+            (Some((text, bounds)), _) => {
+                overlay.show_for_bounds(
+                    bounds,
+                    move |window, cx| {
+                        crate::tooltip::Tooltip::new(text.clone())
+                            .max_w(INLINE_REPLACEMENT_TOOLTIP_MAX_WIDTH)
+                            .build(window, cx)
+                    },
+                    window,
+                    cx,
+                );
             }
-            // Integration point: the managed tooltip port restores a hide keyed
-            // by trigger bounds (the fork's `request_hide(bounds, ..)`), which
-            // keeps a late pill leave from hiding the next trigger's tooltip;
-            // pass `_previous`'s bounds to it then.
-            None => overlay.request_hide(window, cx),
+            // Hide keyed by the pill the pointer left, so a late leave cannot
+            // hide the tooltip of the trigger the pointer moved on to.
+            (None, Some((_, bounds))) => overlay.request_hide_for(bounds, false, window, cx),
+            (None, None) => overlay.request_hide(window, cx),
         });
     })
 }
