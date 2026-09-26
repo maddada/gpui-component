@@ -818,6 +818,8 @@ pub struct Scrollbar {
     mode: Option<ScrollbarMode>,
     scroll_handle: Rc<dyn ScrollbarHandle>,
     scroll_size: Option<Size<Pixels>>,
+    /// See [`Scrollbar::scroll_size_with`].
+    live_scroll_size: Option<Rc<dyn Fn() -> Size<Pixels>>>,
     /// See [`Scrollbar::shown_by_host_scroll`].
     host_scroll_time: Option<Option<Instant>>,
     viewport_bounds: Option<Bounds<Pixels>>,
@@ -844,6 +846,7 @@ impl Scrollbar {
             scroll_handle: Rc::new(scroll_handle.clone()),
             max_fps: 120,
             scroll_size: None,
+            live_scroll_size: None,
             host_scroll_time: None,
             viewport_bounds: None,
             use_layout_bounds: false,
@@ -884,6 +887,19 @@ impl Scrollbar {
     /// Default will sync the `content_size` from `scroll_handle`.
     pub fn scroll_size(mut self, scroll_size: Size<Pixels>) -> Self {
         self.scroll_size = Some(scroll_size);
+        self
+    }
+
+    /// Like [`Scrollbar::scroll_size`], but computed when the bar is laid out, in the same pass
+    /// that reads the offset it is drawn against.
+    ///
+    /// A size taken from the scroll handle while the host builds its elements is the previous
+    /// frame's: the content the handle scrolls has not been measured yet for this frame. A list
+    /// whose rows are being remeasured (a streaming transcript following its tail) then draws each
+    /// frame's fresh offset against the stale size, and the thumb jumps. Takes precedence over
+    /// [`Scrollbar::scroll_size`].
+    pub fn scroll_size_with(mut self, scroll_size: impl Fn() -> Size<Pixels> + 'static) -> Self {
+        self.live_scroll_size = Some(Rc::new(scroll_size));
         self
     }
 
@@ -1406,8 +1422,11 @@ impl Element for Scrollbar {
         let mut states = vec![];
         let mut has_both = self.axis.is_both();
         let scroll_size = self
-            .scroll_size
-            .unwrap_or(self.scroll_handle.content_size());
+            .live_scroll_size
+            .as_ref()
+            .map(|scroll_size| scroll_size())
+            .or(self.scroll_size)
+            .unwrap_or_else(|| self.scroll_handle.content_size());
 
         for axis in self.axis.all().into_iter() {
             let is_vertical = axis.is_vertical();
