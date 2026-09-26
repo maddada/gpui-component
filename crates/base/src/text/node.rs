@@ -2762,7 +2762,7 @@ impl BlockNode {
                     ix,
                     options.list_start,
                     options.ordered,
-                    options.depth,
+                    options.list_depth(),
                 ))
             })
             .when_some(checked, |this, checked| {
@@ -3332,6 +3332,8 @@ impl BlockNode {
                                 ix,
                                 ordered: *ordered,
                                 list_start: *start,
+                                bulleted_depth: options.bulleted_depth + usize::from(!*ordered),
+                                numbered_depth: options.numbered_depth + usize::from(*ordered),
                                 ..options
                             },
                             node_cx,

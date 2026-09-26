@@ -3,10 +3,37 @@ use std::sync::Arc;
 use data_url::DataUrl;
 use gpui::{Image, ImageFormat};
 
-const NUMBERED_PREFIXES_1: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-const NUMBERED_PREFIXES_2: &str = "abcdefghijklmnopqrstuvwxyz";
+const LOWER_ALPHA: &str = "abcdefghijklmnopqrstuvwxyz";
 
 const BULLETS: [&str; 5] = ["•", "◦", "▪", "‣", "⁃"];
+
+const ROMAN: [(u32, &str); 13] = [
+    (1000, "m"),
+    (900, "cm"),
+    (500, "d"),
+    (400, "cd"),
+    (100, "c"),
+    (90, "xc"),
+    (50, "l"),
+    (40, "xl"),
+    (10, "x"),
+    (9, "ix"),
+    (5, "v"),
+    (4, "iv"),
+    (1, "i"),
+];
+
+/// CSS's `lower-roman`, for the third level of numbering.
+fn lower_roman(mut number: u32) -> String {
+    let mut result = String::new();
+    for (value, numeral) in ROMAN {
+        while number >= value {
+            result.push_str(numeral);
+            number -= value;
+        }
+    }
+    result
+}
 
 /// Returns an ordered-list item's ordinal, defaulting omitted starts to one.
 pub(super) fn ordered_list_ordinal(start: Option<u32>, ix: usize) -> u32 {
@@ -16,6 +43,12 @@ pub(super) fn ordered_list_ordinal(start: Option<u32>, ix: usize) -> u32 {
 }
 
 /// Returns the prefix for a list item.
+///
+/// `depth` counts the lists of this item's own kind it sits inside, so the
+/// sequences run the way the CSS defaults do: `decimal`, `lower-alpha`,
+/// `lower-roman` for numbers, and `disc`, `circle`, `square` for bullets. A
+/// bulleted list directly inside a numbered one is a first-level bulleted
+/// list, as CSS's `ul ul` selector decides it.
 pub(super) fn list_item_prefix(
     ix: usize,
     start: Option<u32>,
@@ -24,33 +57,24 @@ pub(super) fn list_item_prefix(
 ) -> String {
     if ordered {
         let ordinal = ordered_list_ordinal(start, ix);
+        // A list counting from zero has no letter or numeral for its first
+        // item, so it keeps its numbers at every depth.
         if depth == 0 || start == Some(0) {
             return format!("{ordinal}. ");
         }
-
-        let alpha_ix = ordinal.saturating_sub(1) as usize;
         if depth == 1 {
+            let alpha_ix = ordinal.saturating_sub(1) as usize;
             return format!(
                 "{}. ",
-                NUMBERED_PREFIXES_1
+                LOWER_ALPHA
                     .chars()
-                    .nth(alpha_ix % NUMBERED_PREFIXES_1.len())
-                    .unwrap()
-            );
-        } else {
-            return format!(
-                "{}. ",
-                NUMBERED_PREFIXES_2
-                    .chars()
-                    .nth(alpha_ix % NUMBERED_PREFIXES_2.len())
+                    .nth(alpha_ix % LOWER_ALPHA.len())
                     .unwrap()
             );
         }
-    } else {
-        let depth = depth.min(BULLETS.len() - 1);
-        let bullet = BULLETS[depth];
-        return format!("{} ", bullet);
+        return format!("{}. ", lower_roman(ordinal));
     }
+    format!("{} ", BULLETS[depth.min(BULLETS.len() - 1)])
 }
 
 /// Decodes a `data:` URL whose mime type names an image format GPUI can
@@ -107,13 +131,13 @@ mod tests {
         assert_eq!(list_item_prefix(10, Some(1), true, 0), "11. ");
         assert_eq!(list_item_prefix(0, Some(3), true, 0), "3. ");
         assert_eq!(list_item_prefix(1, Some(3), true, 0), "4. ");
-        assert_eq!(list_item_prefix(0, Some(1), true, 1), "A. ");
-        assert_eq!(list_item_prefix(1, Some(1), true, 1), "B. ");
-        assert_eq!(list_item_prefix(0, Some(4), true, 1), "D. ");
-        assert_eq!(list_item_prefix(1, Some(4), true, 1), "E. ");
-        assert_eq!(list_item_prefix(0, Some(1), true, 2), "a. ");
-        assert_eq!(list_item_prefix(1, Some(1), true, 2), "b. ");
-        assert_eq!(list_item_prefix(6, Some(1), true, 2), "g. ");
+        assert_eq!(list_item_prefix(0, Some(1), true, 1), "a. ");
+        assert_eq!(list_item_prefix(1, Some(1), true, 1), "b. ");
+        assert_eq!(list_item_prefix(6, Some(1), true, 1), "g. ");
+        assert_eq!(list_item_prefix(0, Some(4), true, 1), "d. ");
+        assert_eq!(list_item_prefix(0, Some(1), true, 2), "i. ");
+        assert_eq!(list_item_prefix(3, Some(1), true, 2), "iv. ");
+        assert_eq!(list_item_prefix(8, Some(1), true, 2), "ix. ");
         assert_eq!(list_item_prefix(0, Some(0), true, 1), "0. ");
         assert_eq!(list_item_prefix(1, Some(0), true, 1), "1. ");
         assert_eq!(list_item_prefix(0, None, false, 0), "• ");

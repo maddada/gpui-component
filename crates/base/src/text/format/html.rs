@@ -513,10 +513,15 @@ fn parse_node(
             local_name!("ul") | local_name!("ol") => {
                 let ordered = name.local == local_name!("ol");
                 let children = consume_children_nodes(node, paragraph, cx);
+                // `<ol start="3">` numbers its first item 3, as Markdown's `3.` does.
+                let start = ordered
+                    .then(|| attr_value(attrs, local_name!("start")))
+                    .flatten()
+                    .and_then(|value| value.trim().parse::<u32>().ok());
                 Some(BlockNode::List {
                     children,
                     ordered,
-                    start: None,
+                    start,
                     span: None,
                 })
             }
