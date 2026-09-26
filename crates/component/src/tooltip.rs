@@ -19,6 +19,21 @@ use crate::{
     text::Text,
 };
 
+/// Ghostex: the corner radius of a tooltip bubble drawn in a frosted window.
+pub const FROSTED_TOOLTIP_RADIUS: f32 = 7.;
+
+static FROSTED_TOOLTIP_ALPHA: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0x3f1e_b852); // 0.62
+
+/// Ghostex: how much of the popover colour a bubble in a frosted window paints over its blur.
+pub fn set_frosted_tooltip_alpha(alpha: f32) {
+    FROSTED_TOOLTIP_ALPHA.store(alpha.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+fn frosted_tooltip_alpha() -> f32 {
+    f32::from_bits(FROSTED_TOOLTIP_ALPHA.load(std::sync::atomic::Ordering::Relaxed))
+}
+
 pub(crate) fn init(_cx: &mut App) {
     // No app-level init needed — TooltipOverlay is per-window via Root.
 }
@@ -109,41 +124,69 @@ impl Render for Tooltip {
         // The wrapper must be a flex container: block layout collapses the
         // bubble's vertical margins, so the overlay positioner would measure a
         // box without them and place the bubble flush against its trigger.
-        div().flex().child(
-            BaseTooltip::new("tooltip-popup")
-                .h_flex()
-                .font_family(cx.theme().font_family.clone())
-                .mx_3()
-                .my_2()
-                .bg(cx.theme().tokens.popover)
-                .text_color(cx.theme().popover_foreground)
-                .bg(cx.theme().tokens.popover)
-                .border_1()
-                .border_color(cx.theme().border)
-                .shadow_md()
-                .rounded(cx.theme().radius)
-                .justify_between()
-                .py_0p5()
-                .px_2()
-                .text_sm()
-                .gap_3()
-                .refine_style(&self.style)
-                .map(|this| {
-                    this.child(div().map(|this| match self.content {
-                        TooltipContext::Text(ref text) => this.child(text.clone()),
-                        TooltipContext::Element(ref builder) => this.child(builder(window, cx)),
-                    }))
+        //
+        // CDXC:Tooltips 2026-09-24 WHY:
+        // Taffy measures a flex item's base and automatic minimum size with its text unwrapped, so a bubble can only shrink to a narrower box (the room next to a native view, see the base `TooltipOverlay`) when every flex item down to the text's container has min-width 0. A bubble that fits keeps its one-line width.
+        // Ghostex: in a frosted window (the desktop's tooltip host under window glass) the bubble
+        // is a thinned fill over the window's blur, which is limited to the bubble's own frame.
+        //
+        // CDXC:Tooltips 2026-09-26 WHY:
+        // The wrapper reports the bubble's laid-out frame (its only child, borders included). A canvas inside the bubble, the obvious way, sits at the bubble's content origin because an absolute child without insets keeps its static position, so the blur ran one padding plus border to the right of the bubble and the bubble no longer matched its text.
+        let frosted = window.frosted_surface();
+        div()
+            .flex()
+            .min_w_0()
+            .when(frosted, |this| {
+                this.on_children_prepainted(|bounds, window, _| {
+                    if let Some(bubble) = bounds.first() {
+                        window.report_frosted_region(*bubble, px(FROSTED_TOOLTIP_RADIUS));
+                    }
                 })
-                .when_some(key_binding, |this, kbd| {
-                    this.child(
-                        div()
-                            .text_xs()
-                            .flex_shrink_0()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(kbd.appearance(false)),
-                    )
-                }),
-        )
+            })
+            .child(
+                BaseTooltip::new("tooltip-popup")
+                    .h_flex()
+                    .min_w_0()
+                    .font_family(cx.theme().font_family.clone())
+                    .mx_3()
+                    .my_2()
+                    .text_color(cx.theme().popover_foreground)
+                    .map(|this| {
+                        if frosted {
+                            this.bg(cx.theme().tokens.popover.opacity(frosted_tooltip_alpha()))
+                        } else {
+                            this.bg(cx.theme().tokens.popover).shadow_md()
+                        }
+                    })
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .rounded(if frosted {
+                        px(FROSTED_TOOLTIP_RADIUS)
+                    } else {
+                        cx.theme().radius
+                    })
+                    .justify_between()
+                    .py_0p5()
+                    .px_2()
+                    .text_sm()
+                    .gap_3()
+                    .refine_style(&self.style)
+                    .map(|this| {
+                        this.child(div().min_w_0().map(|this| match self.content {
+                            TooltipContext::Text(ref text) => this.child(text.clone()),
+                            TooltipContext::Element(ref builder) => this.child(builder(window, cx)),
+                        }))
+                    })
+                    .when_some(key_binding, |this, kbd| {
+                        this.child(
+                            div()
+                                .text_xs()
+                                .flex_shrink_0()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(kbd.appearance(false)),
+                        )
+                    }),
+            )
     }
 }
 
@@ -159,36 +202,41 @@ pub(crate) fn render_tooltip(
     _: &mut Window,
     _: &mut App,
 ) -> AnyElement {
-    div().child(content_view).map(|element| match transition {
-        BaseTooltipTransition::Switch {
-            epoch,
-            previous,
-            current,
-        } => {
-            let same_row = (current.origin.y - previous.origin.y).abs() < px(10.);
-            if !same_row {
-                return element.into_any_element();
+    // Flex with min-width 0, a link in the chain `Tooltip::render` describes.
+    div()
+        .flex()
+        .min_w_0()
+        .child(content_view)
+        .map(|element| match transition {
+            BaseTooltipTransition::Switch {
+                epoch,
+                previous,
+                current,
+            } => {
+                let same_row = (current.origin.y - previous.origin.y).abs() < px(10.);
+                if !same_row {
+                    return element.into_any_element();
+                }
+                let dx = current.center().x - previous.center().x;
+                EffectTransition::new(SLIDE_DURATION)
+                    .ease(ease_in_out_cubic)
+                    .slide_x(-dx, px(0.))
+                    .apply(
+                        element,
+                        ElementId::NamedInteger("tooltip-slide".into(), epoch as u64),
+                    )
+                    .into_any_element()
             }
-            let dx = current.center().x - previous.center().x;
-            EffectTransition::new(SLIDE_DURATION)
-                .ease(ease_in_out_cubic)
-                .slide_x(-dx, px(0.))
+            BaseTooltipTransition::Enter { epoch } => EffectTransition::new(ENTER_DURATION)
+                .ease(ease_out_cubic)
+                .slide_y(px(4.), px(0.))
+                .fade(0.0, 1.0)
                 .apply(
                     element,
-                    ElementId::NamedInteger("tooltip-slide".into(), epoch as u64),
+                    ElementId::NamedInteger("tooltip-enter".into(), epoch as u64),
                 )
-                .into_any_element()
-        }
-        BaseTooltipTransition::Enter { epoch } => EffectTransition::new(ENTER_DURATION)
-            .ease(ease_out_cubic)
-            .slide_y(px(4.), px(0.))
-            .fade(0.0, 1.0)
-            .apply(
-                element,
-                ElementId::NamedInteger("tooltip-enter".into(), epoch as u64),
-            )
-            .into_any_element(),
-    })
+                .into_any_element(),
+        })
 }
 
 // ── Extension trait for managed tooltips ─────────────────────────────────────

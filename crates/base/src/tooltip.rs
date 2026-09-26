@@ -5,7 +5,8 @@ use gpui::{
     ElementId, Entity, GlobalElementId, Half as _, InspectorElementId, InteractiveElement,
     IntoElement, LayoutId, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Position,
     Render, RenderOnce, Role, ScrollWheelEvent, Size, Stateful, StatefulInteractiveElement, Style,
-    Styled, Task, Window, canvas, deferred, div, point, px,
+    Styled, Task, Window, canvas, deferred, div, native_occlusion_row_gap,
+    nudge_out_of_native_occlusions, point, prelude::FluentBuilder as _, px,
 };
 
 use crate::{
@@ -544,6 +545,7 @@ impl Render for TooltipOverlay {
             return div().into_any_element();
         };
         let view = (content.build)(window, cx);
+        let presented_view = view.clone();
         let trigger_bounds = content.trigger_bounds;
         let placement = content.placement;
         let transition = match (self.is_switching, self.previous_bounds) {
@@ -590,11 +592,27 @@ impl Render for TooltipOverlay {
         .absolute()
         .size_0();
 
+        // The room between the native views on the trigger's row; a bubble wider than it wraps
+        // (the component `Tooltip::render` explains the min-width chain that lets it).
+        let gap = native_occlusion_row_gap(
+            trigger_bounds,
+            window.native_occlusions(),
+            window.viewport_size(),
+        );
+        let room = gap.end - gap.start - WINDOW_MARGIN * 2.;
+        let rendered = div()
+            .flex()
+            .min_w_0()
+            .when(room > px(0.), |el| el.max_w(room))
+            .child(rendered)
+            .into_any_element();
+
         let tooltip = deferred(
             TooltipOverlayPositioner {
                 trigger_bounds,
                 placement,
                 children: vec![rendered],
+                view: Some(presented_view),
             }
             .into_any_element(),
         )
@@ -661,6 +679,8 @@ struct TooltipOverlayPositioner {
     trigger_bounds: Bounds<Pixels>,
     placement: ManagedTooltipPlacement,
     children: Vec<AnyElement>,
+    /// The tooltip's view, handed to the window's tooltip presenter when one is set.
+    view: Option<AnyView>,
 }
 
 impl IntoElement for TooltipOverlayPositioner {
@@ -673,7 +693,8 @@ impl IntoElement for TooltipOverlayPositioner {
 
 impl Element for TooltipOverlayPositioner {
     type RequestLayoutState = Vec<LayoutId>;
-    type PrepaintState = ();
+    /// Whether the tooltip went to the window's presenter instead of being painted here.
+    type PrepaintState = bool;
 
     fn id(&self) -> Option<ElementId> {
         None
@@ -715,9 +736,9 @@ impl Element for TooltipOverlayPositioner {
         child_layout_ids: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
-    ) {
+    ) -> bool {
         if child_layout_ids.is_empty() {
-            return;
+            return false;
         }
 
         let mut child_min = point(Pixels::MAX, Pixels::MAX);
@@ -740,6 +761,21 @@ impl Element for TooltipOverlayPositioner {
             frame.map(|inset| *inset + WINDOW_MARGIN),
             self.placement,
         );
+        // CDXC:Tooltips 2026-09-24 SEE-ALSO: gpui's `Window::occlude_native_region` and its stock tooltip prepaint (`window.rs`), which dodge the same regions the same way; the desktop's CEF element records them.
+        let tooltip_bounds = nudge_out_of_native_occlusions(
+            tooltip_bounds,
+            window.native_occlusions(),
+            Bounds::new(Point::default(), window.viewport_size()),
+        );
+
+        // Ghostex: a window with a tooltip presenter draws its tooltips in a window of their own
+        // (the desktop's frosted tooltip host), so this one only reports where it would go.
+        if window.tooltip_presenter_active()
+            && let Some(view) = self.view.clone()
+        {
+            window.present_tooltip(view, tooltip_bounds);
+            return true;
+        }
 
         let offset = tooltip_bounds.origin - bounds.origin;
         let offset = point(offset.x.round(), offset.y.round());
@@ -748,6 +784,7 @@ impl Element for TooltipOverlayPositioner {
                 child.prepaint(window, cx);
             }
         });
+        false
     }
 
     fn paint(
@@ -756,10 +793,13 @@ impl Element for TooltipOverlayPositioner {
         _: Option<&InspectorElementId>,
         _: Bounds<Pixels>,
         _: &mut Self::RequestLayoutState,
-        _: &mut Self::PrepaintState,
+        presented: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
+        if *presented {
+            return;
+        }
         for child in &mut self.children {
             child.paint(window, cx);
         }
