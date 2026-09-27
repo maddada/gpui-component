@@ -569,6 +569,10 @@ pub(crate) struct RunAnchor {
     /// blank space and was proxied to the nearest run. Only a true hit
     /// focuses the view and auto-scrolls it.
     pub(crate) inside: bool,
+    /// The press landed on an atomic run (a reference chip): the anchor is
+    /// the whole run, and the press stays a click, selecting nothing, while
+    /// the pointer is still on it.
+    pub(crate) clicked_atomic: bool,
 }
 
 /// A selection of `TextView` text, made against the run registry.

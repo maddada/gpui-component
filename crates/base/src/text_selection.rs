@@ -1827,6 +1827,7 @@ impl WindowSelectionState {
                 end: run_point,
                 participant: document.participant(held_point),
                 inside: true,
+                clicked_atomic: false,
             });
             self.runs.granularity = runs::Granularity::Character;
             self.runs.did_hit_text = true;
@@ -1968,7 +1969,19 @@ impl WindowSelectionState {
             _ => runs::Granularity::Character,
         };
         let on_glyph = hit.on_glyph;
-        let (unit_start, unit_end) = document.unit(hit, granularity);
+        // CDXC:SessionChat 2026-09-26 WHY:
+        // A plain press on a reference chip anchors the whole chip but selects nothing, and stays a click while the pointer is on the chip (`update_runs`). Its caret used to be a glyph of the chip's label, which an atomic run rounds to the chip's end, so any pointer move before the release selected the chip, and a chip ignores a click that ends with a selection: clicking a reference did nothing.
+        let clicked_atomic = direct.is_some()
+            && granularity == runs::Granularity::Character
+            && document.run(hit.caret).atomic;
+        let (unit_start, unit_end) = document.unit(
+            hit,
+            if clicked_atomic {
+                runs::Granularity::Word
+            } else {
+                granularity
+            },
+        );
         let participant = document.participant(hit.caret);
         let inside = self
             .participants
@@ -1990,7 +2003,10 @@ impl WindowSelectionState {
         self.runs.pending_extension = None;
         let (anchor, start, end) = match extended {
             Some((anchor, anchor_start, anchor_end)) => (
-                anchor,
+                runs::RunAnchor {
+                    clicked_atomic: false,
+                    ..anchor
+                },
                 anchor_start.min(unit_start),
                 anchor_end.max(unit_end),
             ),
@@ -2000,12 +2016,17 @@ impl WindowSelectionState {
                     end: document.run_point(unit_end),
                     participant,
                     inside,
+                    clicked_atomic,
                 },
                 unit_start,
                 unit_end,
             ),
         };
-        let spans = document.resolve(start, end);
+        let spans = if anchor.clicked_atomic {
+            HashMap::new()
+        } else {
+            document.resolve(start, end)
+        };
 
         self.anchor = None;
         self.cursor = None;
@@ -2048,6 +2069,14 @@ impl WindowSelectionState {
         let Some(hit) = document.nearest(position) else {
             return;
         };
+        // A press on a reference chip stays a click while the pointer is on
+        // the chip (see `begin_runs`).
+        if anchor.clicked_atomic && hit.caret.index == anchor_start.index {
+            let views = self.runs.set_spans(HashMap::new());
+            notify_views(views, cx);
+            self.sync_run_coverage(cx);
+            return;
+        }
         // CDXC:FocusRouting 2026-09-17 WHY:
         // A drag from blank space can highlight text while the composer retains keyboard focus and consumes Copy.
         // Focus the first actual text hit without stealing focus for an ordinary blank click.
