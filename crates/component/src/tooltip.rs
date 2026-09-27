@@ -3,7 +3,7 @@ use std::{cell::Cell, rc::Rc, time::Duration};
 use gpui::{
     Action, AnyElement, AnyView, App, AppContext, Bounds, Context, ElementId, IntoElement,
     MouseButton, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement,
-    StyleRefinement, Styled, Window, div, prelude::FluentBuilder, px,
+    StyleRefinement, Styled, Window, div, prelude::FluentBuilder, px, rems,
 };
 use gpui_base::{
     Root, Tooltip as BaseTooltip, TooltipOverlay as BaseTooltipOverlay,
@@ -133,6 +133,7 @@ impl Render for Tooltip {
         // CDXC:Tooltips 2026-09-26 WHY:
         // The wrapper reports the bubble's laid-out frame (its only child, borders included). A canvas inside the bubble, the obvious way, sits at the bubble's content origin because an absolute child without insets keeps its static position, so the blur ran one padding plus border to the right of the bubble and the bubble no longer matched its text.
         let frosted = window.frosted_surface();
+        let measure = text_measure(&self.style, window);
         div()
             .flex()
             .min_w_0()
@@ -173,7 +174,9 @@ impl Render for Tooltip {
                     .refine_style(&self.style)
                     .map(|this| {
                         this.child(div().min_w_0().map(|this| match self.content {
-                            TooltipContext::Text(ref text) => this.child(text.clone()),
+                            TooltipContext::Text(ref text) => {
+                                this.max_w(measure).child(text.clone())
+                            }
                             TooltipContext::Element(ref builder) => this.child(builder(window, cx)),
                         }))
                     })
@@ -188,6 +191,19 @@ impl Render for Tooltip {
                     }),
             )
     }
+}
+
+/// Ghostex: the widest a text tooltip's line may run before it wraps.
+///
+/// CDXC:Tooltips 2026-09-26 DECISION:
+/// User: "the tooltip should wrap after 60 chars ALWAYS in this app I don't want massive width tooltips". Sixty characters of UI text average 30em (a path measured about half an em per character), in the tooltip's own text size, so a tooltip that sets a smaller size wraps at 60 of its own characters. CSS's `60ch` measures the wide "0" and kept a 71-character path on one line. The React tooltip of the desktop's pages (`packages/components/ui/tooltip.tsx` in Ghostex) uses the same measure.
+fn text_measure(style: &StyleRefinement, window: &Window) -> Pixels {
+    let rem_size = window.rem_size();
+    let font_size = style.text.font_size.map_or_else(
+        || rems(0.875).to_pixels(rem_size),
+        |size| size.to_pixels(rem_size),
+    );
+    font_size * 30.
 }
 
 // ── Managed tooltip system ──────────────────────────────────────────────────
