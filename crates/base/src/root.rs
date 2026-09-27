@@ -93,6 +93,7 @@ pub struct Root {
     view: AnyView,
     style: StyleRefinement,
     plugins: Vec<Plugin>,
+    bordered: bool,
 }
 
 impl Root {
@@ -158,7 +159,21 @@ impl Root {
                 .into_iter()
                 .map(|(_, build)| build(window, cx))
                 .collect(),
+            bordered: true,
         }
+    }
+
+    /// Let presentation plugins wrap this window in their client-side frame
+    /// (the Linux shadow and resize edges). Defaults to `true`; pass `false`
+    /// for a window that draws its own frame.
+    pub fn bordered(mut self, bordered: bool) -> Self {
+        self.bordered = bordered;
+        self
+    }
+
+    /// Whether presentation plugins may wrap this window in their frame.
+    pub fn is_bordered(&self) -> bool {
+        self.bordered
     }
 
     /// The original application content entity.

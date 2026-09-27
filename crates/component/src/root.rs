@@ -442,11 +442,14 @@ impl gpui_base::RootPlugin for WindowState {
     fn decorate(
         &self,
         surface: gpui::AnyElement,
-        _root: &gpui_base::Root,
+        root: &gpui_base::Root,
         _window: &mut Window,
         _cx: &mut App,
     ) -> impl IntoElement {
-        window_border().child(surface)
+        if !root.is_bordered() {
+            return surface;
+        }
+        window_border().child(surface).into_any_element()
     }
 }
 
