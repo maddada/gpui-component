@@ -85,6 +85,11 @@ impl BlinkCursor {
         });
     }
 
+    /// Whether the cursor is blinking: started and not stopped since.
+    pub(crate) fn is_running(&self) -> bool {
+        self.epoch != 0
+    }
+
     pub(crate) fn visible(&self) -> bool {
         // Keep showing the cursor if paused
         self.paused || self.visible

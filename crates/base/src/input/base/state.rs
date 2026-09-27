@@ -4428,6 +4428,15 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
         self.editor_style = self
             .projected_editor_style
             .resolved(&crate::Theme::global(cx).tokens);
+        // A focused field always blinks. The focus listener starts the caret,
+        // but it only hears the window this state was created in and only a
+        // focus change GPUI reports, and a stopped caret is never drawn: a
+        // field that got focus any other way (drawn in another window, or
+        // shown again with focus still on it after a blur) showed no caret.
+        // Every focus change redraws the window, so this runs on each one.
+        if self.focus_handle.is_focused(window) && !self.blink_cursor.read(cx).is_running() {
+            self.blink_cursor.update(cx, |cursor, cx| cursor.start(cx));
+        }
         let entity = cx.entity();
         if self._pending_update {
             self.mode.update_highlighter::<M>(
