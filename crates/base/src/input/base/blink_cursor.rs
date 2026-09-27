@@ -34,9 +34,16 @@ impl BlinkCursor {
         }
     }
 
-    /// Start the blinking
+    /// Start the blinking from a visible cursor.
+    ///
+    /// Focusing a field calls this twice (`InputState::focus` and then the
+    /// focus listener), so it restarts the cycle instead of toggling: a second
+    /// toggle hid the caret for the first half second after every focus.
     pub(crate) fn start(&mut self, cx: &mut Context<Self>) {
-        self.blink(self.epoch, cx);
+        self.paused = false;
+        self.visible = false;
+        let epoch = self.next_epoch();
+        self.blink(epoch, cx);
     }
 
     /// Stop the blinking and clear the blink state, so the next [`Self::start`]

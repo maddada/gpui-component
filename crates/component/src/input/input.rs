@@ -167,6 +167,7 @@ pub struct Input {
     accessibility_id: Option<SharedString>,
     aria_label: Option<SharedString>,
     placeholder_color: Option<Hsla>,
+    caret_color: Option<Hsla>,
     scrollbar_thickness: Option<gpui::Pixels>,
     scrollbar_show: Option<crate::scroll::ScrollbarMode>,
 
@@ -273,6 +274,7 @@ impl Input {
             accessibility_id: None,
             aria_label: None,
             placeholder_color: None,
+            caret_color: None,
             scrollbar_thickness: None,
             scrollbar_show: None,
             context_menu_builder: None,
@@ -306,6 +308,13 @@ impl Input {
     /// Override the placeholder color independently of the input text.
     pub fn placeholder_color(mut self, color: impl Into<Hsla>) -> Self {
         self.placeholder_color = Some(color.into());
+        self
+    }
+
+    /// Override the caret color, for a field drawn in its own palette rather
+    /// than the theme's (the theme's caret can vanish against it).
+    pub fn caret_color(mut self, color: impl Into<Hsla>) -> Self {
+        self.caret_color = Some(color.into());
         self
     }
 
@@ -609,7 +618,7 @@ impl RenderOnce for Input {
                 background: cx.theme().editor_background(),
                 border: cx.theme().border,
                 selection: cx.theme().selection,
-                caret: cx.theme().caret,
+                caret: self.caret_color.unwrap_or(cx.theme().caret),
                 diagnostics: gpui_base::input::DiagnosticColors {
                     error: cx.theme().highlight_theme.style.status.error(cx),
                     warning: cx.theme().highlight_theme.style.status.warning(cx),

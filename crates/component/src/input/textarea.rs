@@ -29,6 +29,7 @@ pub struct Textarea {
     accessibility_id: Option<SharedString>,
     aria_label: Option<SharedString>,
     placeholder_color: Option<gpui::Hsla>,
+    caret_color: Option<gpui::Hsla>,
     scrollbar_thickness: Option<gpui::Pixels>,
     scrollbar_show: Option<crate::scroll::ScrollbarMode>,
 
@@ -79,6 +80,7 @@ impl Textarea {
             accessibility_id: None,
             aria_label: None,
             placeholder_color: None,
+            caret_color: None,
             scrollbar_thickness: None,
             scrollbar_show: None,
             context_menu_builder: None,
@@ -155,6 +157,12 @@ impl Textarea {
     /// Override the placeholder color independently of the text.
     pub fn placeholder_color(mut self, color: impl Into<gpui::Hsla>) -> Self {
         self.placeholder_color = Some(color.into());
+        self
+    }
+
+    /// Override the caret color. See [`Input::caret_color`].
+    pub fn caret_color(mut self, color: impl Into<gpui::Hsla>) -> Self {
+        self.caret_color = Some(color.into());
         self
     }
 
@@ -238,6 +246,7 @@ impl Textarea {
             .when_some(self.placeholder_color, |this, color| {
                 this.placeholder_color(color)
             })
+            .when_some(self.caret_color, |this, color| this.caret_color(color))
             .when_some(self.scrollbar_thickness, |this, thickness| {
                 this.scrollbar_thickness(thickness)
             })
