@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use gpui::{HighlightStyle, Pixels, Rems, StyleRefinement, px, rems};
+use gpui::{FontWeight, HighlightStyle, Pixels, Rems, StyleRefinement, px, rems};
 
 use crate::highlighter::HighlightTheme;
 use gpui_base::text::InlineCodeStyle;
@@ -100,6 +100,9 @@ pub struct TextViewStyle {
     /// unaffected; only the cursor shape is. Default `false`, which keeps the
     /// usual text and link cursors.
     pub default_cursor: bool,
+    /// Ghostex fork: the weight `**strong**` text is drawn at. Default
+    /// [`FontWeight::BOLD`].
+    pub strong_weight: FontWeight,
     /// Whether content-specific rendering should use dark-mode assets.
     pub is_dark: bool,
 }
@@ -129,6 +132,7 @@ impl Default for TextViewStyle {
             inline_code_style: None,
             prose_swatch: None,
             default_cursor: false,
+            strong_weight: FontWeight::BOLD,
             is_dark: false,
         }
     }
@@ -165,6 +169,7 @@ impl PartialEq for TextViewStyle {
             && self.inline_code_style == other.inline_code_style
             && self.prose_swatch == other.prose_swatch
             && self.default_cursor == other.default_cursor
+            && self.strong_weight == other.strong_weight
             && self.is_dark == other.is_dark
     }
 }
@@ -223,6 +228,12 @@ impl TextViewStyle {
     /// Selection and clicks keep working; only the cursor shape changes.
     pub fn default_cursor(mut self, default_cursor: bool) -> Self {
         self.default_cursor = default_cursor;
+        self
+    }
+
+    /// Ghostex fork: draw `**strong**` text at this weight instead of bold.
+    pub fn strong_weight(mut self, weight: FontWeight) -> Self {
+        self.strong_weight = weight;
         self
     }
 }

@@ -2161,7 +2161,8 @@ fn mark_highlight(
 ) -> InlineHighlight {
     let mut highlight = HighlightStyle::default();
     if mark.bold {
-        highlight.font_weight = Some(FontWeight::BOLD);
+        // Ghostex fork: the style picks the strong weight (default bold).
+        highlight.font_weight = Some(node_cx.style.strong_weight());
     }
     if mark.italic {
         highlight.font_style = Some(FontStyle::Italic);

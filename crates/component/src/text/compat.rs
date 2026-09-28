@@ -410,6 +410,8 @@ pub(super) fn resolve_component_style(
         .with_inline_code_style(legacy.inline_code_style)
         .with_prose_swatch(legacy.prose_swatch)
         .with_default_cursor(legacy.default_cursor)
+        // Ghostex fork: the strong weight passes straight through.
+        .with_strong_weight(legacy.strong_weight)
         .with_dark(is_dark);
     style
 }

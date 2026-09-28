@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use gpui::{HighlightStyle, Hsla, Pixels, Rems, SharedString, StyleRefinement, rems};
+use gpui::{FontWeight, HighlightStyle, Hsla, Pixels, Rems, SharedString, StyleRefinement, rems};
 
 use crate::ColorTokens;
 
@@ -68,6 +68,8 @@ pub struct TextViewStyle {
     inline_code_style: Option<InlineCodeStyle>,
     prose_swatch: Option<InlineCodeStyle>,
     default_cursor: bool,
+    // Ghostex fork: the weight `**strong**` text is drawn at (Settings draws it at 500).
+    strong_weight: FontWeight,
     is_dark: bool,
 }
 
@@ -97,6 +99,7 @@ impl PartialEq for TextViewStyle {
             && self.inline_code_style == other.inline_code_style
             && self.prose_swatch == other.prose_swatch
             && self.default_cursor == other.default_cursor
+            && self.strong_weight == other.strong_weight
             && self.is_dark == other.is_dark
     }
 }
@@ -150,6 +153,7 @@ impl TextViewStyle {
             inline_code_style: None,
             prose_swatch: None,
             default_cursor: false,
+            strong_weight: FontWeight::BOLD,
             is_dark,
         }
     }
@@ -276,6 +280,13 @@ impl TextViewStyle {
     /// usual text and link cursors.
     pub fn with_default_cursor(mut self, default_cursor: bool) -> Self {
         self.default_cursor = default_cursor;
+        self
+    }
+
+    /// Ghostex fork: sets the weight `**strong**` text is drawn at. Default
+    /// [`FontWeight::BOLD`].
+    pub fn with_strong_weight(mut self, weight: FontWeight) -> Self {
+        self.strong_weight = weight;
         self
     }
 
@@ -470,6 +481,12 @@ impl TextViewStyle {
     /// [`Self::with_default_cursor`].
     pub fn default_cursor(&self) -> bool {
         self.default_cursor
+    }
+
+    /// Ghostex fork: the weight `**strong**` text is drawn at; see
+    /// [`Self::with_strong_weight`].
+    pub fn strong_weight(&self) -> FontWeight {
+        self.strong_weight
     }
 
     /// Whether content-specific assets should use their dark variant.
