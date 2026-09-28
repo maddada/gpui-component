@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use gpui::{HighlightStyle, Pixels, Rems, StyleRefinement, px, rems};
+use gpui::{HighlightStyle, Hsla, Pixels, Rems, StyleRefinement, px, rems};
 
 use crate::highlighter::HighlightTheme;
 use gpui_base::text::InlineCodeStyle;
@@ -100,6 +100,9 @@ pub struct TextViewStyle {
     /// unaffected; only the cursor shape is. Default `false`, which keeps the
     /// usual text and link cursors.
     pub default_cursor: bool,
+    /// Link text color. `None` keeps the theme's `link`, which is wrong for a
+    /// document drawn in a different light/dark mode than the app theme.
+    pub link: Option<Hsla>,
     /// Whether content-specific rendering should use dark-mode assets.
     pub is_dark: bool,
 }
@@ -129,6 +132,7 @@ impl Default for TextViewStyle {
             inline_code_style: None,
             prose_swatch: None,
             default_cursor: false,
+            link: None,
             is_dark: false,
         }
     }
@@ -165,6 +169,7 @@ impl PartialEq for TextViewStyle {
             && self.inline_code_style == other.inline_code_style
             && self.prose_swatch == other.prose_swatch
             && self.default_cursor == other.default_cursor
+            && self.link == other.link
             && self.is_dark == other.is_dark
     }
 }

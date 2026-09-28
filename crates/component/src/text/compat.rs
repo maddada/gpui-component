@@ -453,7 +453,10 @@ pub(super) fn resolve_component_style(
         .with_prose_swatch(legacy.prose_swatch)
         .with_default_cursor(legacy.default_cursor)
         .with_dark(is_dark);
-    style
+    match legacy.link {
+        Some(link) => style.with_link(link),
+        None => style,
+    }
 }
 
 fn refine_highlight_style(style: &mut HighlightStyle, refinement: HighlightStyle) {
