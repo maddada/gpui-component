@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use gpui::{FontWeight, HighlightStyle, Pixels, Rems, StyleRefinement, px, rems};
+use gpui::{FontWeight, HighlightStyle, Hsla, Pixels, Rems, StyleRefinement, px, rems};
 
 use crate::highlighter::HighlightTheme;
 use gpui_base::text::InlineCodeStyle;
@@ -103,6 +103,9 @@ pub struct TextViewStyle {
     /// Ghostex fork: the weight `**strong**` text is drawn at. Default
     /// [`FontWeight::BOLD`].
     pub strong_weight: FontWeight,
+    /// Link text color. `None` keeps the theme's `link`, which is wrong for a
+    /// document drawn in a different light/dark mode than the app theme.
+    pub link: Option<Hsla>,
     /// Whether content-specific rendering should use dark-mode assets.
     pub is_dark: bool,
 }
@@ -133,6 +136,7 @@ impl Default for TextViewStyle {
             prose_swatch: None,
             default_cursor: false,
             strong_weight: FontWeight::BOLD,
+            link: None,
             is_dark: false,
         }
     }
@@ -170,6 +174,7 @@ impl PartialEq for TextViewStyle {
             && self.prose_swatch == other.prose_swatch
             && self.default_cursor == other.default_cursor
             && self.strong_weight == other.strong_weight
+            && self.link == other.link
             && self.is_dark == other.is_dark
     }
 }

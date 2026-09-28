@@ -413,7 +413,10 @@ pub(super) fn resolve_component_style(
         // Ghostex fork: the strong weight passes straight through.
         .with_strong_weight(legacy.strong_weight)
         .with_dark(is_dark);
-    style
+    match legacy.link {
+        Some(link) => style.with_link(link),
+        None => style,
+    }
 }
 
 fn refine_highlight_style(style: &mut HighlightStyle, refinement: HighlightStyle) {
