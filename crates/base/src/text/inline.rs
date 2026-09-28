@@ -1499,6 +1499,7 @@ mod range_highlight_tests {
         test_draw::in_prepaint,
         test_fonts::{BODY, WideMonoTextSystem},
     };
+    use crate::text_selection::text_rows_extent;
     use gpui::{AvailableSpace, TestApp, size};
 
     /// Lays `text` out at `wrap_width` and returns the highlight boxes of
@@ -1540,6 +1541,62 @@ mod range_highlight_tests {
                 .map(|(row, left, right)| (left, right, row))
                 .collect()
         })
+    }
+
+    /// The selection fast paths decide a whole inline from this extent, so it
+    /// must start exactly at the first row the per-character walk tests and
+    /// reach at least the bottom of the last one. It may reach further: a
+    /// trailing empty line, or a last row whose only character the walk
+    /// places at the end of the row before it, holds no row the walk tests.
+    #[test]
+    fn text_rows_extent_matches_the_character_walk() {
+        let mut app = TestApp::with_text_system(Arc::new(WideMonoTextSystem));
+        in_prepaint(&mut app, |window, cx| {
+            let style = TextStyle {
+                font_family: BODY.into(),
+                font_size: px(16.).into(),
+                ..Default::default()
+            };
+            let origin = point(px(7.), px(11.3));
+            for text in [
+                "one row",
+                "a long paragraph that wraps onto several rows of eight pixel glyphs",
+                "first line\nsecond line that also wraps around\n\nfourth",
+                "中文与 English 混排的一段文字也会换行",
+                "trailing newline\n",
+            ] {
+                for wrap_width in [40., 100., 1000.] {
+                    let runs = text_runs(text.len(), &style, &[]);
+                    let styled =
+                        StyledText::new(SharedString::from(text.to_string())).with_runs(runs);
+                    let layout = styled.layout().clone();
+                    let mut element = styled.into_any_element();
+                    element.layout_as_root(
+                        size(
+                            AvailableSpace::Definite(px(wrap_width)),
+                            AvailableSpace::MinContent,
+                        ),
+                        window,
+                        cx,
+                    );
+                    element.prepaint_at(origin, window, cx);
+                    // Taller than the layout's rows, as a window line height
+                    // may be.
+                    let line_height = layout.line_height() + px(3.);
+                    let rows_y = text
+                        .char_indices()
+                        .filter_map(|(offset, _)| layout.position_for_index(offset))
+                        .map(|position| position.y);
+                    let top = rows_y.clone().fold(Pixels::MAX, Pixels::min);
+                    let bottom = rows_y.fold(Pixels::MIN, Pixels::max) + line_height;
+
+                    let (rows_top, rows_bottom) = text_rows_extent(&layout, line_height);
+                    let context = format!("{text:?} at {wrap_width}px");
+                    assert_eq!(rows_top, top, "top of {context}");
+                    assert!(rows_bottom >= bottom, "bottom of {context}");
+                }
+            }
+        });
     }
 
     #[test]

@@ -5,22 +5,21 @@ use gpui::{
     Window, point, px,
 };
 use gpui_component_macros::IntoPlot;
-use num_traits::{Num, ToPrimitive};
 
 use crate::{
     ActiveTheme,
     plot::{
-        AXIS_GAP, AxisLabelPlacement, PathCaches, Plot, PlotAxis, StrokeStyle,
-        scale::{Scale, ScaleLinear, ScalePoint, Sealed},
+        AxisLabelPlacement, Curve, PathCaches, Plot, PlotAxis,
+        scale::{PlotValue, Scale, ScaleLinear, ScalePoint},
         shape::Line,
         tooltip::{CrossLine, Dot, Tooltip, TooltipState},
     },
 };
 
 use super::{
-    HOVER_DOT_SIZE, HOVER_HALO_SIZE, PointAxes, TooltipContent, ValueExtent, axis_point_count,
-    build_point_x_labels, caller_id, labeled_items, pinned_plot_mask, point_range,
-    point_value_scale,
+    AXIS_GAP, HOVER_DOT_SIZE, HOVER_HALO_SIZE, PointAxes, TooltipContent, ValueExtent,
+    axis_point_count, build_point_x_labels, caller_id, labeled_items, pinned_plot_mask,
+    point_range, point_value_scale,
 };
 
 #[derive(IntoPlot)]
@@ -28,13 +27,13 @@ pub struct LineChart<T, X, Y>
 where
     T: 'static,
     X: PartialEq + Into<SharedString> + 'static,
-    Y: Copy + PartialOrd + Num + ToPrimitive + Sealed + 'static,
+    Y: PlotValue,
 {
     data: Vec<T>,
     x: Option<Rc<dyn Fn(&T) -> X>>,
     y: Option<Rc<dyn Fn(&T) -> Y>>,
     stroke: Option<Hsla>,
-    stroke_style: StrokeStyle,
+    curve: Curve,
     dot: bool,
     tick_margin: usize,
     x_axis: bool,
@@ -51,7 +50,7 @@ where
 impl<T, X, Y> LineChart<T, X, Y>
 where
     X: PartialEq + Into<SharedString> + 'static,
-    Y: Copy + PartialOrd + Num + ToPrimitive + Sealed + 'static,
+    Y: PlotValue,
 {
     #[track_caller]
     pub fn new<I>(data: I) -> Self
@@ -61,7 +60,7 @@ where
         Self {
             data: data.into_iter().collect(),
             stroke: None,
-            stroke_style: Default::default(),
+            curve: Default::default(),
             dot: false,
             x: None,
             y: None,
@@ -169,17 +168,17 @@ where
     }
 
     pub fn natural(mut self) -> Self {
-        self.stroke_style = StrokeStyle::Natural;
+        self.curve = Curve::Natural;
         self
     }
 
     pub fn linear(mut self) -> Self {
-        self.stroke_style = StrokeStyle::Linear;
+        self.curve = Curve::Linear;
         self
     }
 
     pub fn step_after(mut self) -> Self {
-        self.stroke_style = StrokeStyle::StepAfter;
+        self.curve = Curve::StepAfter;
         self
     }
 
@@ -333,7 +332,7 @@ where
 
         let len = self.data.len();
         let x = ScalePoint::new(
-            self.data.iter().map(|v| x_fn(v)).collect(),
+            self.data.iter().map(|v| x_fn(v)),
             point_range(
                 self.axes.plot_left(),
                 width - self.axes.plot_left(),
@@ -355,7 +354,7 @@ where
 impl<T, X, Y> Plot for LineChart<T, X, Y>
 where
     X: PartialEq + Into<SharedString> + 'static,
-    Y: Copy + PartialOrd + Num + ToPrimitive + Sealed + 'static,
+    Y: PlotValue,
 {
     fn prepaint(
         &mut self,
@@ -421,18 +420,19 @@ where
 
         // Draw line
         let stroke = self.stroke.unwrap_or(cx.theme().chart_2);
-        let x_fn = x_fn.clone();
+        // The x domain holds one entry per datum, so a point's x is its index's
+        // tick; looking its value up in the domain would make each paint O(n^2).
         let y_fn = y_fn.clone();
         let mut line = Line::new()
-            .data(&self.data)
-            .x(move |d| x.tick(&x_fn(d)))
-            .y(move |d| y.tick(&y_fn(d)))
+            .data(self.data.iter().enumerate())
+            .x(move |(i, _)| x.tick_at(*i))
+            .y(move |(_, d)| y.tick(&y_fn(d)))
             .stroke(stroke)
-            .stroke_style(self.stroke_style)
+            .curve(self.curve)
             .stroke_width(2.);
 
         if self.dot {
-            line = line.dot().dot_size(8.).dot_fill_color(stroke);
+            line = line.dot().dot_size(8.).dot_fill(stroke);
         }
 
         let mask = self
@@ -468,7 +468,7 @@ where
         bounds: Bounds<Pixels>,
         _cx: &App,
     ) -> Option<TooltipState> {
-        let (x_fn, y_fn) = (self.x.as_ref()?, self.y.as_ref()?);
+        let y_fn = self.y.as_ref()?;
         let (x, y, _) = self.scales(bounds)?;
 
         // Ignore the x-axis label gutter so hovering the labels doesn't show a tooltip.
@@ -479,9 +479,9 @@ where
             return None;
         }
 
-        let index = x.least_index(position.x.as_f32());
+        let index = x.nearest_index(position.x.as_f32());
         let d = self.data.get(index)?;
-        let x_tick = x.tick(&x_fn(d))?;
+        let x_tick = x.tick_at(index)?;
         let y_tick = y.tick(&y_fn(d))?;
 
         Some(TooltipState::new(
@@ -531,5 +531,33 @@ where
         )?;
 
         Some(tooltip.into_any_element())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{Bounds, point, px, size};
+
+    use super::LineChart;
+    use crate::plot::scale::Scale;
+
+    #[test]
+    fn test_f32_values_scale_like_f64() {
+        let bounds = Bounds::new(point(px(0.), px(0.)), size(px(100.), px(50.)));
+        let chart: LineChart<(usize, f32), String, f32> =
+            LineChart::new([2f32, 4.].into_iter().enumerate())
+                .x(|(i, _)| i.to_string())
+                .y(|(_, v)| *v)
+                .x_axis(false);
+        let (_, y, _) = chart.scales(bounds).unwrap();
+        let y64 = LineChart::new([2f64, 4.].into_iter().enumerate())
+            .x(|(i, _): &(usize, f64)| i.to_string())
+            .y(|(_, v)| *v)
+            .x_axis(false)
+            .scales(bounds)
+            .unwrap()
+            .1;
+        assert_eq!(y.tick(&4.), y64.tick(&4.));
+        assert_eq!(y.tick(&0.), y64.tick(&0.));
     }
 }

@@ -427,7 +427,8 @@ impl Input {
 
     /// Sets a custom context menu builder for the input, shown as a native OS menu.
     ///
-    /// If set, this overrides the built-in right-click context menu.
+    /// If set, this overrides the built-in right-click context menu. It shows
+    /// only while the state's context menu is enabled, which is the default.
     pub fn context_menu(
         mut self,
         f: impl Fn(NativeMenu, &mut Window, &mut App) -> NativeMenu + 'static,
@@ -722,9 +723,12 @@ impl RenderOnce for Input {
                         !capabilities.is_copyable(),
                         Box::new(gpui_base::input::Copy),
                     )
+                    // Offered whenever the text can change, without peeking
+                    // at the clipboard: the synchronous read is always empty
+                    // on the web, and an empty clipboard pastes nothing.
                     .menu_with_disabled(
                         t!("Input.Paste"),
-                        !(editable && cx.read_from_clipboard().is_some()),
+                        !editable,
                         Box::new(gpui_base::input::Paste),
                     )
                     .separator()
