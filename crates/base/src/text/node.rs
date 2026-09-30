@@ -3096,6 +3096,23 @@ impl BlockNode {
             ))
     }
 
+    /// The column an item's text sits in, beside its marker.
+    ///
+    /// Its flex basis is `auto`, not the `0` of `flex_1`: the column clips
+    /// (`overflow_hidden`), and Taffy measures a clipping flex item's width
+    /// contribution as its flex basis alone, so a zero basis made every list
+    /// item report no width and a fit-content parent (a chat bubble) shrank to
+    /// the widest paragraph outside the list. With an `auto` basis the column
+    /// reports its text's width, and still shrinks to the space the marker
+    /// leaves once the row has a width.
+    fn list_item_text(content: AnyElement) -> Div {
+        div()
+            .flex_auto()
+            .min_w_0()
+            .overflow_hidden()
+            .child(content)
+    }
+
     /// A block an item holds under its first line (a continuation paragraph,
     /// a fenced code block, a quote, a table), on the column the item's text
     /// starts on, whatever gutter the host gave the marker.
@@ -3113,7 +3130,7 @@ impl BlockNode {
             .when(!options.todo && checked.is_none(), |this| {
                 this.child(Self::list_marker(ix, options, style, true))
             })
-            .child(div().flex_1().min_w_0().overflow_hidden().child(content))
+            .child(Self::list_item_text(content))
     }
 
     fn render_list_item_row(
@@ -3168,7 +3185,7 @@ impl BlockNode {
                         ),
                 )
             })
-            .child(div().flex_1().min_w_0().overflow_hidden().child(content))
+            .child(Self::list_item_text(content))
     }
 
     fn render_list_item(
