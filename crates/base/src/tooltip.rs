@@ -294,7 +294,7 @@ impl TooltipOverlay {
     ) {
         // Gate both delayed display and the immediate grace-period switch.
         // Keep this in Base so every managed component shares the policy.
-        if !self.enabled {
+        if !self.enabled || window.tooltips_suppressed() {
             return;
         }
         self.hide_task = None;
@@ -340,7 +340,10 @@ impl TooltipOverlay {
                 }
                 // A trigger removed while hovered (a closed row) never reports
                 // its leave, so the pending show must check the pointer itself.
-                if !content.trigger_bounds.contains(&window.mouse_position()) {
+                // A menu that opened meanwhile (a right press) suppresses it too.
+                if window.tooltips_suppressed()
+                    || !content.trigger_bounds.contains(&window.mouse_position())
+                {
                     this.clear_state();
                     return;
                 }
@@ -541,6 +544,9 @@ impl RootPlugin for TooltipOverlay {}
 
 impl Render for TooltipOverlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if window.tooltips_suppressed() {
+            return div().into_any_element();
+        }
         let Some(content) = self.content.as_ref() else {
             return div().into_any_element();
         };
@@ -637,6 +643,19 @@ impl Root {
         if let Some(overlay) = Self::tooltip_overlay(window, cx) {
             overlay.update(cx, |overlay, cx| overlay.hide(cx));
         }
+    }
+
+    /// Hide this window's tooltips, managed and element ones alike, until the returned guard drops.
+    ///
+    /// Held by a menu for the window it was opened from: a tooltip pending on the pressed trigger
+    /// would otherwise show over the menu, since that trigger never reports a hover-leave while the
+    /// menu covers it.
+    ///
+    /// CDXC:Tooltips 2026-09-30 DECISION:
+    /// User: "fix gpui chat view so tooltip doesn't appear when context menu is shown ... in the sidebar too make sure this doesn't happen and the files list in docs". The chat's menus (`native_chat/option_menu/window.rs`), the sidebar's menu (`native_sidebar/menus.rs`) and every app context menu (`context_menu.rs`, with Docs' files list drawer added by `native_docs/actions.rs`) each hold this guard while they are open.
+    pub fn suppress_tooltips(window: &mut Window, cx: &mut App) -> gpui::TooltipSuppression {
+        Self::hide_tooltip(window, cx);
+        window.suppress_tooltips()
     }
 
     /// Show a managed tooltip in this window at once, anchored to `trigger_bounds` (in this
