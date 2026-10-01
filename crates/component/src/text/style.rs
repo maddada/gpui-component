@@ -35,10 +35,12 @@ pub struct TextViewStyle {
     /// Style refinement applied to the table container (the bordered wrapper
     /// in wrap mode, the scroll viewport in horizontal-scroll mode).
     ///
-    /// Set `overflow_x: scroll` here for adaptive table layout: columns fit
-    /// their content when space allows, shrink (wrapping cell text) down to a
-    /// per-column floor when the frame is narrower, and below that the table
-    /// scrolls horizontally instead of squeezing further, e.g.
+    /// Set `overflow_x: scroll` here for adaptive table layout, which works
+    /// like CSS's automatic table layout: short columns keep their cells on
+    /// one line, longer ones narrow (wrapping cell text) down to about their
+    /// widest word, the room left is shared by how much more each column
+    /// wants, and only a table whose floors are wider than the frame scrolls
+    /// horizontally, e.g.
     /// `TextViewStyle::default().table({ let mut s = StyleRefinement::default(); s.overflow.x = Some(Overflow::Scroll); s })`.
     pub table: StyleRefinement,
     /// Style refinement applied to the header row (the first row) of a table,

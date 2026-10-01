@@ -2768,6 +2768,7 @@ fn table_cell_insets(style: &TextViewStyle, rem_size: Pixels) -> (f32, f32) {
 /// scrollable width, making it unreachable, so only a host that asks for one
 /// ([`TextViewStyle::table_cell_max_width`]) gets it, with wrapping or an
 /// explicit clip.
+#[cfg(test)]
 fn measure_table_columns(
     table: &Table,
     col_count: usize,
@@ -2775,6 +2776,31 @@ fn measure_table_columns(
     window: &mut Window,
     cx: &mut App,
 ) -> Vec<f32> {
+    measure_table_column_extents(table, col_count, node_cx, window, cx)
+        .into_iter()
+        .map(|extent| extent.max)
+        .collect()
+}
+
+/// A column's two intrinsic widths, as CSS's automatic table layout reads
+/// them, both including the cell's padding and border.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ColumnExtent {
+    /// Max-content: the widest cell kept on one line.
+    max: f32,
+    /// Min-content: the widest word, the narrowest the column gets before a
+    /// word has to break.
+    min: f32,
+}
+
+/// [`measure_table_columns`] together with each column's min-content width.
+fn measure_table_column_extents(
+    table: &Table,
+    col_count: usize,
+    node_cx: &NodeContext,
+    window: &mut Window,
+    cx: &mut App,
+) -> Vec<ColumnExtent> {
     let body_style = window.text_style();
     let font_size = body_style.font_size.to_pixels(window.rem_size());
     let mut head_style = body_style.clone();
@@ -2782,7 +2808,13 @@ fn measure_table_columns(
         head_style.font_weight = weight;
     }
     let (cell_pad, cell_border) = table_cell_insets(&node_cx.style, window.rem_size());
-    let mut col_w = vec![CELL_MIN_PX; col_count];
+    let mut col_w = vec![
+        ColumnExtent {
+            max: CELL_MIN_PX,
+            min: CELL_MIN_PX,
+        };
+        col_count
+    ];
     for (row_ix, row) in table.children.iter().enumerate() {
         let text_style = if row_ix == 0 {
             &head_style
@@ -2799,22 +2831,19 @@ fn measure_table_columns(
                 || node_cx.style.prose_swatch().is_some()
                 || node_cx.link_presentation.is_some())
                 && cell.children.should_render_inline_flow(node_cx);
-            if chips
+            let flow = chips
                 || cell
                     .children
                     .children
                     .iter()
-                    .any(|node| node.custom.is_some())
-            {
-                let items = cell.children.inline_flow_items(None, &[], &[], node_cx, cx);
-                let width = super::inline_flow::intrinsic_width(&items, window, cx);
-                let border = if ix + 1 < col_count { cell_border } else { 0. };
-                *slot = slot.max(f32::from(width) + cell_pad + border);
-                continue;
-            }
+                    .any(|node| node.custom.is_some());
             let text = cell.children.text();
             let highlights = cell.children.inline_highlights(node_cx, cx);
             let mut w = 0.0_f32;
+            // The widest run between two spaces. A flow's chips are measured
+            // as their text plus the chip's padding, which is close enough
+            // for a floor: a word wider than its column still breaks.
+            let mut word_w = 0.0_f32;
             let mut line_start = 0;
             for line in text.split('\n') {
                 let start = line_start + (line.len() - line.trim_start().len());
@@ -2848,18 +2877,45 @@ fn measure_table_columns(
                     if highlights.iter().any(|(_, h)| h.font_size_scale.is_some()) {
                         line_w += px(crate::text::inline_flow::INLINE_CODE_PADDING * 2.);
                     }
+                    let chip_pad = if highlights.iter().any(|(_, h)| h.font_size_scale.is_some()) {
+                        crate::text::inline_flow::INLINE_CODE_PADDING * 2.
+                    } else {
+                        0.
+                    };
                     let runs = text_runs(range.len(), text_style, &highlights);
-                    line_w += window
-                        .text_system()
-                        .layout_line(&line[range], font_size * scale, &runs, None)
-                        .width;
+                    let segment = &line[range];
+                    let layout =
+                        window
+                            .text_system()
+                            .layout_line(segment, font_size * scale, &runs, None);
+                    let mut word_start = None;
+                    for (index, ch) in segment
+                        .char_indices()
+                        .chain(std::iter::once((segment.len(), ' ')))
+                    {
+                        match (ch.is_whitespace(), word_start) {
+                            (false, None) => word_start = Some(index),
+                            (true, Some(start)) => {
+                                let width = layout.x_for_index(index) - layout.x_for_index(start);
+                                word_w = word_w.max(f32::from(width) + chip_pad);
+                                word_start = None;
+                            }
+                            _ => {}
+                        }
+                    }
+                    line_w += layout.width;
                 }
                 w = w.max(f32::from(line_w));
             }
             // Border-box widths, so the padding and border the cell draws
             // must leave the measured text its full width.
             let border = if ix + 1 < col_count { cell_border } else { 0. };
-            *slot = slot.max(w + cell_pad + border);
+            if flow {
+                let items = cell.children.inline_flow_items(None, &[], &[], node_cx, cx);
+                w = f32::from(super::inline_flow::intrinsic_width(&items, window, cx));
+            }
+            slot.max = slot.max.max(w + cell_pad + border);
+            slot.min = slot.min.max(word_w.min(w) + cell_pad + border);
         }
     }
     col_w
@@ -3397,17 +3453,25 @@ impl BlockNode {
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
-        // Shrinking columns stop (and the table starts to scroll) at a floor
-        // scaled to their content: roughly the width at which the text wraps
-        // to `CELL_WRAP_MAX_LINES` lines, clamped between the two bounds so
-        // moderate columns can still wrap meaningfully while one huge column
-        // cannot push the scroll threshold arbitrarily high.
-        const CELL_WRAP_MAX_LINES: f32 = 2.0;
-        const CELL_WRAP_MIN_PX: f32 = 160.0;
-        const CELL_WRAP_MAX_PX: f32 = 480.0;
+        // The adaptive layout's column floors, in multiples of the body font
+        // size so they follow the text's zoom. A column whose longest cell is
+        // at most `SHORT_COLUMN_EM` wide (an id, a date, a status word) keeps
+        // it on one line. A longer one may narrow to its widest word, or to
+        // `LONG_TEXT_FLOOR_SHARE` of its one-line width (at most
+        // `LONG_TEXT_FLOOR_MAX_EM`) so a column of sentences in a table too
+        // wide to fit still reads a few words per line, but never below
+        // `WRAP_MIN_EM` nor above `WORD_FLOOR_MAX_EM`: a longer word (a path,
+        // a URL) breaks rather than forcing the whole table to scroll.
+        const SHORT_COLUMN_EM: f32 = 8.0;
+        const WRAP_MIN_EM: f32 = 6.0;
+        const WORD_FLOOR_MAX_EM: f32 = 12.0;
+        const LONG_TEXT_FLOOR_SHARE: f32 = 0.25;
+        const LONG_TEXT_FLOOR_MAX_EM: f32 = 10.0;
         const TABLE_BORDER_PX: f32 = 2.0; // the track's border_1, left + right
+        const CELL_FIT_SLACK_PX: f32 = 2.0;
 
-        let mut col_w = measure_table_columns(table, col_count, node_cx, window, cx);
+        let extents = measure_table_column_extents(table, col_count, node_cx, window, cx);
+        let mut col_w: Vec<f32> = extents.iter().map(|extent| extent.max).collect();
         let style = &node_cx.style;
         // A host's column cap (`table_cell_max_width`): no column grows past
         // it, and none shrinks below its capped width either: the cells wrap
@@ -3428,17 +3492,59 @@ impl BlockNode {
         let nowrap =
             cap.is_none() && style.table_cell().text.white_space == Some(WhiteSpace::Nowrap);
         let clip = cap.is_some() && !style.table_wrap_cells();
-        let col_min_w: Vec<f32> = if nowrap || cap.is_some() {
-            col_w.clone()
-        } else {
-            col_w
+        let adaptive = !nowrap && cap.is_none();
+        if adaptive {
+            // A short column is laid out exactly as wide as it measured, and a hair of rounding
+            // between the measure and the wrap then broke an id like "G8dg0" before its last glyph.
+            for width in &mut col_w {
+                *width += CELL_FIT_SLACK_PX;
+            }
+        }
+        let col_min_w: Vec<f32> = if adaptive {
+            let em = f32::from(window.text_style().font_size.to_pixels(window.rem_size()));
+            let (cell_pad, cell_border) = table_cell_insets(style, window.rem_size());
+            extents
                 .iter()
-                .map(|w| {
-                    (w / CELL_WRAP_MAX_LINES)
-                        .clamp(CELL_WRAP_MIN_PX, CELL_WRAP_MAX_PX)
-                        .min(*w)
+                .enumerate()
+                .map(|(ix, extent)| {
+                    // The extents are border-box widths; the floors are text widths.
+                    let inset = cell_pad + if ix + 1 < col_count { cell_border } else { 0. };
+                    let max = col_w[ix];
+                    if extent.max - inset <= SHORT_COLUMN_EM * em {
+                        return max;
+                    }
+                    let text = (extent.min - inset)
+                        .max(
+                            ((extent.max - inset) * LONG_TEXT_FLOOR_SHARE)
+                                .min(LONG_TEXT_FLOOR_MAX_EM * em),
+                        )
+                        .clamp(WRAP_MIN_EM * em, WORD_FLOOR_MAX_EM * em);
+                    (text + inset + CELL_FIT_SLACK_PX).min(max)
                 })
                 .collect()
+        } else {
+            col_w.clone()
+        };
+        // In the adaptive layout every column starts at its floor and the
+        // room left over is shared in proportion to how much more each one
+        // wants (CSS's automatic table layout): all columns reach their
+        // one-line width together, a short column never grows past it while a
+        // long one can still use the space, and only when even the floors do
+        // not fit does the table scroll. A table of short columns alone shares
+        // the extra room by width instead, so it still fills its frame.
+        let col_grow: Vec<f32> = if adaptive {
+            let want: Vec<f32> = col_w
+                .iter()
+                .zip(&col_min_w)
+                .map(|(width, floor)| (width - floor).max(0.))
+                .collect();
+            if want.iter().sum::<f32>() >= 1. {
+                want
+            } else {
+                col_w.clone()
+            }
+        } else {
+            col_w.clone()
         };
         // The viewport draws the table's frame: its default border, then the
         // host's `table` and `table_track` refinements.
@@ -3480,17 +3586,17 @@ impl BlockNode {
                 let is_last_col = ix == row.children.len() - 1;
                 let width = col_w.get(ix).copied().unwrap_or(CELL_MIN_PX);
                 let min_width = col_min_w.get(ix).copied().unwrap_or(CELL_MIN_PX);
+                let grow = col_grow.get(ix).copied().unwrap_or(width);
                 cells.push(
                     div()
-                        // Measured max-content width is the flex-basis;
-                        // `flex_grow` (proportional to it) distributes extra
-                        // space so a narrow table still fills the frame, while
-                        // shrinking is clamped at `min_w` — the flex engine
-                        // squeezes columns (their text wraps) down to the
-                        // floors before the track starts to scroll.
-                        .flex_basis(px(width))
-                        .flex_grow(width)
-                        .flex_shrink(1.)
+                        // Adaptive: the floor is the flex-basis and `flex_grow`
+                        // shares the rest (see `col_grow`). Capped or nowrap:
+                        // the measured max-content width is the basis, grown
+                        // in proportion to fill the frame and never shrunk
+                        // below `min_w`, which equals it there.
+                        .flex_basis(px(if adaptive { min_width } else { width }))
+                        .flex_grow(grow)
+                        .flex_shrink(if adaptive { 0. } else { 1. })
                         .min_w(px(min_width))
                         .overflow_hidden()
                         .when(clip, |this| this.whitespace_nowrap())
