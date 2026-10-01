@@ -33,6 +33,7 @@ use crate::{
         },
         selection_adapter::TextViewSelectionAdapter,
         stream_fade::{StreamFadeTracker, TextViewMotion},
+        text_find::{TextFind, find_occurrences},
     },
     v_flex,
 };
@@ -149,6 +150,13 @@ pub struct TextViewState {
     /// The rendered text of `parsed_content`, built when first read.
     rendered_index: Arc<OnceLock<RenderedIndex>>,
     range_highlights: Option<Arc<RangeHighlightFrame>>,
+    /// The occurrences of the element's find (`TextView::find`), with the
+    /// lowercase query and the revision they were found in.
+    find_matches: Option<(SharedString, usize, Arc<[Range<usize>]>)>,
+    /// What the find's highlights were last set for.
+    find_drawn: Option<FindDrawn>,
+    /// The reveal token the find last scrolled its current match for.
+    find_revealed: Option<u64>,
     pub(super) pending_reveal: Option<PendingReveal>,
     pub(super) selection_revision: usize,
     compatible_layout_update: bool,
@@ -157,6 +165,16 @@ pub struct TextViewState {
     tx: Sender<UpdateOptions>,
     _parse_task: Task<()>,
     _receive_task: Task<()>,
+}
+
+/// What a find's highlights were set for (`TextViewState::sync_find`).
+#[derive(Clone, PartialEq)]
+struct FindDrawn {
+    query: SharedString,
+    revision: usize,
+    active: Option<usize>,
+    background: gpui::Hsla,
+    active_background: gpui::Hsla,
 }
 
 impl TextViewState {
@@ -275,6 +293,9 @@ impl TextViewState {
             full_update_revision: 0,
             rendered_index: Arc::default(),
             range_highlights: None,
+            find_matches: None,
+            find_drawn: None,
+            find_revealed: None,
             pending_reveal: None,
             selection_revision: 0,
             compatible_layout_update: false,
@@ -652,6 +673,71 @@ impl TextViewState {
         );
         cx.notify();
         Ok(())
+    }
+
+    /// Highlight the occurrences of the element's find, or drop them when it
+    /// has none. Runs on every layout, so it searches only when the query or
+    /// the text changed and resets the highlights only when what they show
+    /// changed; it replaces any [range highlights](Self::set_range_highlights)
+    /// while a find is set. Layout draws the result, so nothing is notified.
+    pub(super) fn sync_find(&mut self, find: Option<&TextFind>, now: Instant) {
+        let Some(find) = find.filter(|_| self.format == TextViewFormat::Markdown) else {
+            if self.find_drawn.take().is_some() {
+                self.range_highlights = None;
+            }
+            self.find_matches = None;
+            return;
+        };
+        let query = SharedString::from(find.query.trim().to_lowercase());
+        let revision = self.committed_revision;
+        let text = self.rendered_text();
+        let matches = match &self.find_matches {
+            Some((found_query, found_revision, matches))
+                if *found_query == query && *found_revision == revision =>
+            {
+                matches.clone()
+            }
+            _ => {
+                let matches: Arc<[Range<usize>]> = find_occurrences(text.as_str(), &query).into();
+                self.find_matches = Some((query.clone(), revision, matches.clone()));
+                matches
+            }
+        };
+        let before = find.counter.get();
+        find.counter.set(before + matches.len());
+        let active = find
+            .active
+            .and_then(|index| index.checked_sub(before))
+            .filter(|index| *index < matches.len());
+        let drawn = FindDrawn {
+            query,
+            revision,
+            active,
+            background: find.background,
+            active_background: find.active_background,
+        };
+        if self.find_drawn.as_ref() != Some(&drawn) {
+            let highlights = matches.iter().enumerate().map(|(index, range)| {
+                let background = if Some(index) == active {
+                    find.active_background
+                } else {
+                    find.background
+                };
+                RangeHighlight::new(range.clone(), background)
+            });
+            // The ranges come from this very text, so they always resolve.
+            self.range_highlights = RangeHighlightFrame::new(&text, highlights)
+                .ok()
+                .flatten()
+                .map(Arc::new);
+            self.find_drawn = Some(drawn);
+        }
+        if let (Some(index), Some(token)) = (active, find.reveal)
+            && self.find_revealed != Some(token)
+        {
+            self.find_revealed = Some(token);
+            self.pending_reveal = PendingReveal::new(&text, &matches[index], now);
+        }
     }
 
     /// Remove all range highlights.

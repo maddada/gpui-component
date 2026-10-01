@@ -12,7 +12,7 @@ pub use gpui_base::text::{
     CodeBlock, InlineCodeStyle, InlineElement, InlineLink, InlineRenderContext,
     MarkdownBlockParserFn, MarkdownBlockRenderFn, MarkdownExtensions, MarkdownNode,
     MarkdownParseContext, MarkdownPlugin, RangeHighlight, RangeHighlightError, RenderedText,
-    SelectionFormat, TableData, TextViewMotion, TextViewState, markdown_ast,
+    SelectionFormat, TableData, TextFind, TextViewMotion, TextViewState, markdown_ast,
 };
 pub use style::TextViewStyle;
 

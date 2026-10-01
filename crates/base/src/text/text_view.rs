@@ -15,6 +15,7 @@ use crate::text::node::{CodeBlock, TableData};
 use crate::text::range_highlight::{PendingReveal, RevealProgress};
 use crate::text::state::{LineSpan, SelectionFormat, TextViewState};
 use crate::text::stream_fade::TextViewMotion;
+use crate::text::text_find::TextFind;
 use crate::{GlobalState, TextSelection, text::TextViewStyle};
 
 /// Type for code block actions generator function.
@@ -169,6 +170,7 @@ pub struct TextView {
     reveal_handler: Option<Rc<RevealHandlerFn>>,
     markdown_extensions: Arc<MarkdownExtensions>,
     motion: Option<TextViewMotion>,
+    find: Option<TextFind>,
 }
 
 /// A plugin that can configure a [`TextView`].
@@ -219,6 +221,7 @@ impl TextView {
             reveal_handler: None,
             markdown_extensions: Arc::default(),
             motion: None,
+            find: None,
         }
     }
 
@@ -246,6 +249,7 @@ impl TextView {
             reveal_handler: None,
             markdown_extensions: Arc::default(),
             motion: None,
+            find: None,
         }
     }
 
@@ -273,6 +277,7 @@ impl TextView {
             reveal_handler: None,
             markdown_extensions: Arc::default(),
             motion: None,
+            find: None,
         }
     }
 
@@ -473,6 +478,13 @@ impl TextView {
         F: Fn(Bounds<Pixels>, &mut Window, &mut App) + 'static,
     {
         self.reveal_handler = Some(Rc::new(handler));
+        self
+    }
+
+    /// Highlights the occurrences of a find-bar query in the rendered text;
+    /// see [`TextFind`]. Replaces any range highlights set on the state.
+    pub fn find(mut self, find: TextFind) -> Self {
+        self.find = Some(find);
         self
     }
 
@@ -737,6 +749,7 @@ impl Element for TextView {
             if let Some(text) = &self.text {
                 state.set_element_text(text, cx);
             }
+            state.sync_find(self.find.as_ref(), cx.background_executor().now());
         });
 
         let focus_handle = state.read(cx).focus_handle.clone();

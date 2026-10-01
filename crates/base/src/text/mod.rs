@@ -16,6 +16,7 @@ mod selection_adapter;
 mod state;
 mod stream_fade;
 mod style;
+mod text_find;
 mod text_view;
 mod utils;
 
@@ -30,6 +31,7 @@ pub use state::*;
 pub(crate) use stream_fade::TextLeafKey;
 pub use stream_fade::TextViewMotion;
 pub use style::*;
+pub use text_find::TextFind;
 pub use text_view::*;
 
 pub(crate) fn init(cx: &mut App) {

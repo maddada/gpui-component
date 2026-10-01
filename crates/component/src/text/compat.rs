@@ -187,6 +187,11 @@ impl TextView {
         self.inner = self.inner.on_link_secondary_click(f);
         self
     }
+    /// Highlights the occurrences of a find-bar query in the rendered text.
+    pub fn find(mut self, find: gpui_base::text::TextFind) -> Self {
+        self.inner = self.inner.find(find);
+        self
+    }
     /// Scrolls a container that ignores scroll requests to the line of
     /// `TextViewState::reveal_range`, with the line's window bounds.
     pub fn on_reveal<F>(mut self, f: F) -> Self
