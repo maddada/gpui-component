@@ -3292,6 +3292,19 @@ fn paint_text_selection(state: &Entity<WindowSelectionState>, window: &mut Windo
         if phase.capture()
             && let Some(state) = mouse_move_state.upgrade()
         {
+            // A move without the button down after a press means its release
+            // never reached the window (the Windows caption move loop eats
+            // it), so the press ends here rather than selecting on hover.
+            if event.pressed_button != Some(MouseButton::Left)
+                && state.read(cx).mouse_down_prepared
+            {
+                state.update(cx, |state, cx| {
+                    state.mouse_down_prepared = false;
+                    state.press_began = false;
+                    state.end(cx)
+                });
+                return;
+            }
             state.update(cx, |state, cx| {
                 // A handle drag maps the pointer through the handle's offset;
                 // the raw pointer must not fight it.
