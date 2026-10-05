@@ -19,8 +19,14 @@ use crate::{
     text::Text,
 };
 
-/// Ghostex: the corner radius of a tooltip bubble drawn in a frosted window.
-pub const FROSTED_TOOLTIP_RADIUS: f32 = 7.;
+/// Ghostex: the corner radius of every tooltip bubble, in a frosted window or not.
+///
+/// CDXC:Tooltips 2026-10-05 DECISION:
+/// User: "Please make the tooltips in this app all have rounded corners, not square ones." One radius for every tooltip, the 8px the app's menus and popovers already use, replacing the theme's 2px radius (which read as square) and the 5px and 7px values individual tooltips carried. Supersedes the 2026-06-30 5px radius of the React tooltips. Callers must not set their own `.rounded(..)` on a tooltip.
+pub const TOOLTIP_RADIUS: f32 = 8.;
+
+/// Ghostex: the corner radius of a tooltip bubble drawn in a frosted window (the same as every tooltip's).
+pub const FROSTED_TOOLTIP_RADIUS: f32 = TOOLTIP_RADIUS;
 
 static FROSTED_TOOLTIP_ALPHA: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0x3f1e_b852); // 0.62
@@ -161,11 +167,7 @@ impl Render for Tooltip {
                     })
                     .border_1()
                     .border_color(cx.theme().border)
-                    .rounded(if frosted {
-                        px(FROSTED_TOOLTIP_RADIUS)
-                    } else {
-                        cx.theme().radius
-                    })
+                    .rounded(px(TOOLTIP_RADIUS))
                     .justify_between()
                     .py_0p5()
                     .px_2()
