@@ -1,28 +1,25 @@
 use std::{
+    borrow::Cow,
     collections::HashMap,
     ops::Range,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock, Weak},
 };
 
 use gpui::{
-    AnyElement, App, DefiniteLength, Div, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla,
-    Image, ImageFormat, ImageSource, InteractiveElement as _, IntoElement, IsZero as _, Length,
-    MouseButton, ObjectFit, Overflow, ParentElement, Pixels, Rems, ScrollHandle, SharedString,
-    SharedUri, StatefulInteractiveElement, StyleRefinement, Styled, StyledImage as _, WhiteSpace,
-    Window, div, img, prelude::FluentBuilder as _, px, relative, rems,
+    AnyElement, App, DefiniteLength, Div, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla, Image, ImageFormat, ImageSource, InteractiveElement as _, IntoElement, IsZero as _, Length, MouseButton, ObjectFit, Overflow, ParentElement, Pixels, Rems, ScrollHandle, SharedString, SharedUri, StatefulInteractiveElement, StyleRefinement, Styled, StyledImage as _, WhiteSpace, Window, div, img, prelude::FluentBuilder as _, px, relative, rems, Axis, Bounds, Element, GlobalElementId, InspectorElementId, LayoutId, Point, TextStyleRefinement,
 };
 use markdown::mdast;
 
 use crate::{
-    Scrollbar, ScrollbarMode, ScrollbarThumbStyle, StyledExt, h_flex,
+    Scrollbar, ScrollbarMode, ScrollbarThumbStyle, StyledExt, h_flex, GlobalState, ScrollableMask,
     scrollable_mask::horizontal_scroll_area,
     text::{
         CodeBlockActionsFn, CodeBlockHighlighterFn, CodeBlockWrapFn, LinkClickHandlerFn,
         MarkdownExtensions, MarkdownNode, TableActionsFn,
         document::NodeRenderOptions,
         inline::{
-            Inline, InlineHighlight, InlineState, combine_highlights, fade_highlights, text_runs,
-            text_size_ranges,
+            Inline, InlineHighlight, InlineState, combine_highlights, fade_highlights,
+            point_in_text_selection, text_runs, text_size_ranges,
         },
         inline_flow::{InlineFlow, InlineFlowItem, slice_ranges},
         range_highlight::{RangeHighlightFrame, RevealAt, RevealRequest},
@@ -77,7 +74,10 @@ pub(crate) enum BlockNode {
     },
     CodeBlock(CodeBlock),
     /// A custom Markdown node produced by [`MarkdownExtensions`].
-    Custom(MarkdownNode),
+    Custom {
+        node: MarkdownNode,
+        state: BlockState,
+    },
     Table(Table),
     Break {
         html: bool,
@@ -94,6 +94,173 @@ pub(crate) enum BlockNode {
         span: Option<Span>,
     },
     Unknown,
+}
+
+/// Retained block interaction state, shared with its rendered element.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct BlockState {
+    // None is unobserved, allowing virtualized copy to include enclosed blocks.
+    selection: Arc<Mutex<Option<BlockSelection>>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlockSelection {
+    Empty,
+    Full,
+}
+
+impl BlockState {
+    fn selection(&self) -> Option<BlockSelection> {
+        self.selection.lock().ok().and_then(|selection| *selection)
+    }
+
+    fn set_selection(&self, value: Option<BlockSelection>) {
+        if let Ok(mut selection) = self.selection.lock() {
+            *selection = value;
+        }
+    }
+
+    fn is_selected(&self) -> bool {
+        self.selection() == Some(BlockSelection::Full)
+    }
+
+    fn has_selection_observation(&self) -> bool {
+        self.selection().is_some()
+    }
+
+    fn clear_selection(&self) {
+        self.set_selection(None);
+    }
+}
+
+impl PartialEq for BlockState {
+    fn eq(&self, _: &Self) -> bool {
+        // Runtime selection does not change parsed document identity.
+        true
+    }
+}
+
+/// Observe the plugin's own bounds without changing its layout or listeners.
+struct CustomBlockElement {
+    content: AnyElement,
+    state: BlockState,
+}
+
+impl IntoElement for CustomBlockElement {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for CustomBlockElement {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.content.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.content.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let view = GlobalState::global(cx).text_view_state().cloned();
+        let selection = view.as_ref().and_then(|view| {
+            let state = view.read(cx);
+            if !state.is_selectable() {
+                return None;
+            }
+            if state.is_all_selected() {
+                return Some(BlockSelection::Full);
+            }
+            if state.preserve_inline_selection {
+                return self.state.selection();
+            }
+            let (start, end) = state.selection_points(cx)?;
+            // Selection uses the full content bounds, not the visible clip or
+            // the paragraph gap outside this element.
+            if bounds.size.width <= Pixels::ZERO
+                || bounds.size.height <= Pixels::ZERO
+                || bounds.bottom() <= start.y.min(end.y)
+                || bounds.top() > start.y.max(end.y)
+            {
+                return None;
+            }
+            Some(if custom_block_is_selected(bounds, start, end) {
+                BlockSelection::Full
+            } else {
+                BlockSelection::Empty
+            })
+        });
+        self.state.set_selection(selection);
+        if let Some(view) = &view {
+            let visible = bounds.intersect(&window.content_mask().bounds);
+            if view.read(cx).is_selectable()
+                && visible.size.width > Pixels::ZERO
+                && visible.size.height > Pixels::ZERO
+            {
+                view.update(cx, |state, _| {
+                    state.selection_adapter.register_inline(vec![visible]);
+                });
+            }
+        }
+        self.content.paint(window, cx);
+        if selection == Some(BlockSelection::Full) {
+            let color = view.as_ref().unwrap().read(cx).text_view_style.selection();
+            window.paint_quad(gpui::fill(bounds, color));
+        }
+    }
+}
+
+fn custom_block_is_selected(
+    bounds: Bounds<Pixels>,
+    start: Point<Pixels>,
+    end: Point<Pixels>,
+) -> bool {
+    start != end
+        && (bounds.contains(&start)
+            || bounds.contains(&end)
+            || point_in_text_selection(
+                bounds.origin,
+                bounds.size.width,
+                start,
+                end,
+                bounds.size.height,
+            ))
 }
 
 #[derive(Clone, Copy)]
@@ -128,7 +295,7 @@ impl BlockNode {
             BlockNode::List { span, .. } => *span,
             BlockNode::ListItem { span, .. } => *span,
             BlockNode::CodeBlock(code_block) => code_block.span,
-            BlockNode::Custom(el) => el.span,
+            BlockNode::Custom { node, .. } => node.span,
             BlockNode::Table(table) => table.span,
             BlockNode::Break { span, .. } => *span,
             BlockNode::HorizontalRule { span, .. } => *span,
@@ -173,8 +340,14 @@ impl BlockNode {
                 }
             }
             BlockNode::CodeBlock(code_block) => selected = code_block.selected_source_range(),
-            BlockNode::Custom(_)
-            | BlockNode::Definition { .. }
+            BlockNode::Custom { node, state } => {
+                if state.is_selected() {
+                    selected = node
+                        .source_range()
+                        .map_or(SourceRangeSelection::Unmapped, SourceRangeSelection::Mapped);
+                }
+            }
+            BlockNode::Definition { .. }
             | BlockNode::Break { .. }
             | BlockNode::HorizontalRule { .. }
             | BlockNode::Unknown => {}
@@ -306,11 +479,14 @@ impl BlockNode {
                     text.push('\n');
                 }
             }
-            BlockNode::Custom(node) => {
-                if let BlockTextKind::All = kind {
-                    let content = node.as_text();
+            BlockNode::Custom { node, state } => {
+                if matches!(kind, BlockTextKind::All) || state.is_selected() {
+                    let content = match kind {
+                        BlockTextKind::SelectedSource => Cow::Owned(node.to_markdown()),
+                        _ => Cow::Borrowed(node.as_text()),
+                    };
                     if !content.is_empty() {
-                        text.push_str(content);
+                        text.push_str(&content);
                         text.push('\n');
                     }
                 }
@@ -359,8 +535,11 @@ impl BlockNode {
                     .any(|cell| cell.children.has_selection())
             }),
             BlockNode::CodeBlock(code_block) => code_block.has_selection(),
-            BlockNode::Custom { .. }
-            | BlockNode::Definition { .. }
+            BlockNode::Custom { state, .. } => {
+                // An observed empty endpoint must suppress virtualized copy fallback.
+                state.has_selection_observation()
+            }
+            BlockNode::Definition { .. }
             | BlockNode::Break { .. }
             | BlockNode::HorizontalRule { .. }
             | BlockNode::Unknown { .. } => false,
@@ -387,8 +566,10 @@ impl BlockNode {
                 }
             }
             BlockNode::CodeBlock(code_block) => code_block.clear_selection(),
-            BlockNode::Custom { .. }
-            | BlockNode::Definition { .. }
+            BlockNode::Custom { state, .. } => {
+                state.clear_selection();
+            }
+            BlockNode::Definition { .. }
             | BlockNode::Break { .. }
             | BlockNode::HorizontalRule { .. }
             | BlockNode::Unknown { .. } => {}
@@ -546,6 +727,11 @@ impl PartialEq for ImageNode {
 pub(crate) struct SourceSegment {
     pub(crate) rendered: Range<usize>,
     pub(crate) source: Range<usize>,
+    /// Whether each rendered character came from a source character of the
+    /// same length, so that part of the segment maps to part of its source.
+    /// A decoded entity or an escape maps only as a whole, even an entity
+    /// whose characters take as many bytes as its source, like `&acE;`.
+    pub(crate) linear: bool,
 }
 
 pub(crate) enum SourceRangeSelection {
@@ -581,7 +767,7 @@ fn source_range_for_segments(
     selection: Range<usize>,
 ) -> Option<Range<usize>> {
     fn mapped_source_start(segment: &SourceSegment, rendered_start: usize) -> usize {
-        if segment.rendered.len() == segment.source.len() {
+        if segment.linear {
             segment.source.start + rendered_start.saturating_sub(segment.rendered.start)
         } else {
             segment.source.start
@@ -589,7 +775,7 @@ fn source_range_for_segments(
     }
 
     fn mapped_source_end(segment: &SourceSegment, rendered_end: usize) -> usize {
-        if segment.rendered.len() == segment.source.len() {
+        if segment.linear {
             segment.source.start
                 + rendered_end
                     .min(segment.rendered.end)
@@ -1510,6 +1696,7 @@ pub(crate) struct Table {
     /// The [`TableData`] handed to the `table_actions` hook, kept between
     /// frames; see [`Table::cached_table_data`].
     pub(crate) table_data_cache: TableDataCache,
+    pub(crate) column_widths_cache: TableColumnWidthsCache,
 }
 
 /// Derived state, invisible to `Debug` and equality.
@@ -1539,6 +1726,41 @@ impl std::fmt::Debug for TableDataCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("TableDataCache")
     }
+}
+
+/// Like `TableDataCache`, derived widths survive clones of an unchanged
+/// parsed table. A newly parsed table starts with an empty cache.
+#[derive(Default)]
+pub(crate) struct TableColumnWidthsCache(Mutex<Option<Arc<TableColumnWidths>>>);
+
+impl Clone for TableColumnWidthsCache {
+    fn clone(&self) -> Self {
+        let cached = self.0.lock().ok().and_then(|cache| cache.clone());
+        Self(Mutex::new(cached))
+    }
+}
+
+impl PartialEq for TableColumnWidthsCache {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for TableColumnWidthsCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TableColumnWidthsCache")
+    }
+}
+
+struct TableColumnWidths {
+    text_system: Weak<gpui::WindowTextSystem>,
+    text_style: gpui::TextStyle,
+    rem_size: Pixels,
+    mono_family: SharedString,
+    inline_code: HighlightStyle,
+    /// Maxima from ordinary text only. Custom cells may shrink after an update.
+    widths: Vec<f32>,
+    custom_cells: Vec<(usize, usize)>,
 }
 
 /// Plain snapshot of a rendered Markdown table, passed to the
@@ -1748,7 +1970,9 @@ pub struct CodeBlock {
     meta: Option<SharedString>,
     state: Arc<Mutex<InlineState>>,
     highlight_cache: Arc<Mutex<Option<CachedCodeBlockHighlights>>>,
-    source_segments: Vec<SourceSegment>,
+    /// Rendered UTF-8 byte spans of the code paired with their exact Markdown
+    /// source spans.
+    pub(crate) source_segments: Vec<SourceSegment>,
     pub span: Option<Span>,
 }
 
@@ -2918,7 +3142,7 @@ fn measure_table_column_extents(
             slot.min = slot.min.max(word_w.min(w) + cell_pad + border);
         }
     }
-    col_w
+    (col_w, custom_cells)
 }
 
 /// The group a table's horizontal scrollbar is revealed by.
@@ -3104,7 +3328,7 @@ impl BlockNode {
                 }
             }
             BlockNode::HorizontalRule { .. } => "---".to_string(),
-            BlockNode::Custom(node) => node.to_markdown(),
+            BlockNode::Custom { node, .. } => node.to_markdown(),
             BlockNode::Definition {
                 identifier,
                 url,
@@ -3407,6 +3631,17 @@ impl BlockNode {
             _ => return div().into_any_element(),
         };
 
+        // Scroll mode is opted in via `style.table` overflow-x: scroll.
+        if matches!(node_cx.style.table().overflow.x, Some(Overflow::Scroll)) {
+            let col_count = table
+                .children
+                .iter()
+                .map(|row| row.children.len())
+                .max()
+                .unwrap_or(0);
+            return Self::render_scroll_table(table, col_count, options, node_cx, window, cx);
+        }
+
         // Per-column max text length (in chars), used to proportion the columns
         // in the default (wrap) layout.
         let mut col_lens: Vec<usize> = vec![];
@@ -3419,12 +3654,7 @@ impl BlockNode {
             }
         }
 
-        // Scroll mode is opted in via `style.table` overflow-x: scroll.
-        if matches!(node_cx.style.table().overflow.x, Some(Overflow::Scroll)) {
-            Self::render_scroll_table(table, col_lens.len(), options, node_cx, window, cx)
-        } else {
-            Self::render_wrap_table(table, &col_lens, options, node_cx, window, cx)
-        }
+        Self::render_wrap_table(table, &col_lens, options, node_cx, window, cx)
     }
 
     /// Horizontally scrollable table layout (opt-in via `style.table`
@@ -3758,7 +3988,9 @@ impl BlockNode {
             .child(
                 div()
                     .w_full()
-                    .bg(cx.theme().tokens.colors.surface)
+                    .bg(style
+                        .table_background()
+                        .unwrap_or(cx.theme().tokens.colors.surface))
                     .border_1()
                     .border_color(style.border())
                     .overflow_hidden()
@@ -3903,13 +4135,19 @@ impl BlockNode {
                 })
                 .into_any_element(),
             BlockNode::CodeBlock(code_block) => code_block.render(&options, node_cx, window, cx),
-            BlockNode::Custom(node) => {
+            BlockNode::Custom { node, state } => {
                 let inner = match node_cx.markdown_extensions.render_block(node, window, cx) {
                     Some(rendered) => rendered,
                     None => div().child(node.as_text().to_string()).into_any_element(),
                 };
 
-                div().pb(mb).child(inner).into_any_element()
+                div()
+                    .pb(mb)
+                    .child(CustomBlockElement {
+                        content: inner,
+                        state: state.clone(),
+                    })
+                    .into_any_element()
             }
             BlockNode::Table { .. } => {
                 Self::render_table(self, &options, node_cx, window, cx).into_any_element()
@@ -3937,6 +4175,105 @@ impl BlockNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn block_plugin_selection_copies_both_formats_and_clears_synchronously() {
+        let source = "$$\nx\n$$";
+        let mut node = MarkdownNode::new("math", ()).text("x").markdown(source);
+        node.set_span(Some(Span {
+            start: 0,
+            end: source.len(),
+        }));
+        let state = BlockState::default();
+        let same_content = BlockNode::Custom {
+            node: node.clone(),
+            state: BlockState::default(),
+        };
+        let block = BlockNode::Custom {
+            node,
+            state: state.clone(),
+        };
+        let document = crate::text::document::ParsedDocument {
+            source: source.into(),
+            blocks: Arc::new(vec![block.clone()]),
+        };
+        assert!(!block.has_selection());
+        state.set_selection(Some(BlockSelection::Full));
+        // Runtime selection does not affect parsed content equality.
+        assert_eq!(block, same_content);
+        for blocks in [None, Some(0..=0)] {
+            assert_eq!(
+                document.selected_text(SelectionFormat::Plain, blocks.clone()),
+                "x\n"
+            );
+            assert_eq!(
+                document.selected_text(SelectionFormat::Source, blocks),
+                source
+            );
+        }
+        assert_eq!(document.selected_source_range(), Some(0..source.len()));
+
+        // A clone shares the retained state, including clearing before repaint.
+        block.clear_selection();
+        assert!(!document.blocks[0].has_selection());
+        assert_eq!(
+            document.selected_text(SelectionFormat::Plain, Some(0..=0)),
+            ""
+        );
+        assert_eq!(document.selected_source_range(), None);
+    }
+
+    #[test]
+    fn block_plugin_empty_endpoint_suppresses_virtualized_copy_fallback() {
+        let state = BlockState::default();
+        let block = BlockNode::Custom {
+            node: MarkdownNode::new("math", ())
+                .text("formula")
+                .markdown("$$formula$$"),
+            state: state.clone(),
+        };
+        let after = CodeBlock::from_code("after", None::<SharedString>);
+        after.set_selection(0..5);
+        let document = crate::text::document::ParsedDocument {
+            blocks: Arc::new(vec![block, BlockNode::CodeBlock(after)]),
+            ..Default::default()
+        };
+        assert!(
+            document
+                .selected_text(SelectionFormat::Plain, Some(0..=1))
+                .contains("formula")
+        );
+        state.set_selection(Some(BlockSelection::Empty));
+        assert!(document.blocks[0].has_selection());
+        for format in [SelectionFormat::Plain, SelectionFormat::Source] {
+            let text = document.selected_text(format, Some(0..=1));
+            assert!(text.contains("after"));
+            assert!(!text.contains("formula"));
+        }
+    }
+
+    #[test]
+    fn block_plugin_geometry_selects_whole_blocks_in_both_drag_directions() {
+        let bounds = Bounds::new(gpui::point(px(10.), px(20.)), gpui::size(px(100.), px(40.)));
+        let inside = bounds.center();
+        let above = gpui::point(px(0.), px(0.));
+        let below = gpui::point(px(0.), px(80.));
+        for (start, end) in [
+            (above, inside),
+            (inside, below),
+            (above, below),
+            (inside, inside + gpui::point(px(1.), px(0.))),
+        ] {
+            assert!(custom_block_is_selected(bounds, start, end));
+            assert!(custom_block_is_selected(bounds, end, start));
+        }
+        assert!(!custom_block_is_selected(bounds, inside, inside));
+        assert!(!custom_block_is_selected(
+            bounds,
+            gpui::point(px(150.), px(30.)),
+            gpui::point(px(160.), px(40.))
+        ));
+    }
 
     #[test]
     fn selected_inline_objects_coalesce_surrounding_emphasis() {
@@ -4084,23 +4421,231 @@ mod tests {
             ),
         ));
         let table = table_of(
-            vec![vec![TableCell {
-                children: Paragraph {
-                    children: vec![InlineNode::custom(MarkdownNode::new("test", ()).text("x"))],
-                    ..Default::default()
-                },
-                width: None,
-            }]],
+            vec![
+                vec![plain_cell("ordinary text")],
+                vec![TableCell {
+                    children: Paragraph {
+                        children: vec![InlineNode::custom(MarkdownNode::new("test", ()).text("x"))],
+                        ..Default::default()
+                    },
+                    width: None,
+                }],
+            ],
             vec![],
         );
         in_prepaint(&mut app, move |window, cx| {
-            for expected in [400, 600] {
+            let mut cached = None;
+            for expected in [400, 600, 10, 400] {
                 width.store(expected, std::sync::atomic::Ordering::Relaxed);
+                let measured = measure_table_columns(&table, 1, &node_cx, window, cx)[0];
+                let current = cached_column_widths(&table);
                 assert_eq!(
-                    measure_table_columns(&table, 1, &node_cx, window, cx)[0],
-                    expected as f32 + CELL_PAD_PX
+                    measured,
+                    current.widths[0].max(expected as f32 + CELL_PAD_PX)
                 );
+                assert_eq!(current.custom_cells, vec![(1, 0)]);
+                if let Some(cached) = cached.replace(current.clone()) {
+                    assert!(Arc::ptr_eq(&cached, &current));
+                }
             }
+        });
+    }
+
+    fn cached_column_widths(table: &Table) -> Arc<TableColumnWidths> {
+        table.column_widths_cache.0.lock().unwrap().clone().unwrap()
+    }
+
+    #[test]
+    fn table_columns_cache_preserves_plain_widths_and_clones() {
+        use crate::text::inline::test_draw::in_prepaint;
+        use crate::text::inline::test_fonts::{BODY, WideMonoTextSystem, record_shaped_lines};
+        use gpui::{Refineable as _, TestApp, TextStyle};
+
+        let long = "é界".repeat(2048);
+        let table = table_of(
+            vec![
+                vec![plain_cell(&format!(" \t{long} \nshort\n ")), plain_cell("")],
+                vec![plain_cell("short")],
+                vec![],
+                vec![plain_cell(""), plain_cell("a\nabcdefghijklmnop")],
+            ],
+            vec![],
+        );
+        let uncached = table.clone();
+        let node_cx = NodeContext::default();
+        let mut app = TestApp::with_text_system(Arc::new(WideMonoTextSystem));
+        let (table, node_cx, cached) = in_prepaint(&mut app, move |window, cx| {
+            window.set_rem_size(px(20.));
+            let style = TextStyle {
+                font_family: BODY.into(),
+                font_size: rems(1.).into(),
+                ..Default::default()
+            };
+            let cached =
+                window.with_text_style(Some(style.subtract(&Default::default())), |window| {
+                    let (widths, shaped) = record_shaped_lines(|| {
+                        measure_table_columns(&table, 2, &node_cx, window, cx)
+                    });
+                    assert_eq!(widths, vec![40960. + CELL_PAD_PX + CELL_BORDER_PX, 176.]);
+                    assert!(shaped.iter().any(|line| line == &long));
+                    assert_eq!(
+                        table, uncached,
+                        "derived widths do not change table equality"
+                    );
+                    assert!(uncached.column_widths_cache.0.lock().unwrap().is_none());
+
+                    let cached = cached_column_widths(&table);
+                    let cloned = table.clone();
+                    for same in [&table, &cloned] {
+                        let (again, shaped) = record_shaped_lines(|| {
+                            measure_table_columns(same, 2, &node_cx, window, cx)
+                        });
+                        assert_eq!(again, widths);
+                        assert!(shaped.is_empty());
+                        assert!(Arc::ptr_eq(&cached, &cached_column_widths(same)));
+                    }
+
+                    // A different column count changes which cells draw borders.
+                    assert_eq!(
+                        measure_table_columns(&cloned, 3, &node_cx, window, cx),
+                        vec![widths[0], widths[1] + CELL_BORDER_PX, CELL_MIN_PX]
+                    );
+                    assert!(!Arc::ptr_eq(&cached, &cached_column_widths(&cloned)));
+                    assert!(Arc::ptr_eq(&cached, &cached_column_widths(&table)));
+                    assert!(
+                        measure_table_columns(&Table::default(), 0, &node_cx, window, cx)
+                            .is_empty()
+                    );
+                    cached
+                });
+            (table, node_cx, cached)
+        });
+        // A parsed table can be rendered in another window. Do not reuse a
+        // pixel-width cache from a different window's text system.
+        in_prepaint(&mut app, move |window, cx| {
+            window.set_rem_size(cached.rem_size);
+            window.with_text_style(
+                Some(cached.text_style.subtract(&Default::default())),
+                |window| {
+                    measure_table_columns(&table, 2, &node_cx, window, cx);
+                    assert!(!Arc::ptr_eq(&cached, &cached_column_widths(&table)));
+                },
+            );
+        });
+    }
+
+    #[test]
+    fn table_columns_cache_tracks_typography() {
+        use crate::text::inline::test_draw::in_prepaint;
+        use crate::text::inline::test_fonts::{BODY, MONO, WideMonoTextSystem};
+        use gpui::{Refineable as _, TestApp, TextStyle};
+
+        let code = "0123456789";
+        let mut paragraph = Paragraph::default();
+        paragraph
+            .push(InlineNode::new(code).marks(vec![(0..code.len(), TextMark::default().code())]));
+        let table = table_of(
+            vec![vec![
+                plain_cell(code),
+                TableCell {
+                    children: paragraph,
+                    width: None,
+                },
+            ]],
+            vec![],
+        );
+        let base = TextStyle {
+            font_family: BODY.into(),
+            font_size: rems(1.).into(),
+            ..Default::default()
+        };
+        let mut larger = base.clone();
+        larger.font_size = rems(2.).into();
+        let mut bold = base.clone();
+        bold.font_weight = FontWeight::BOLD;
+        let mut mono = base.clone();
+        mono.font_family = MONO.into();
+        let normal_code = HighlightStyle::default();
+        let bold_code = HighlightStyle {
+            font_weight: Some(FontWeight::BOLD),
+            ..Default::default()
+        };
+        let mut app = TestApp::with_text_system(Arc::new(WideMonoTextSystem));
+        in_prepaint(&mut app, move |window, cx| {
+            let mut previous = None;
+            for (style, rem_size, family, inline_code, expected) in [
+                (base.clone(), 20., MONO, normal_code, [117., 195.]),
+                (base.clone(), 30., MONO, normal_code, [167., 282.5]),
+                (larger, 20., MONO, normal_code, [217., 370.]),
+                (bold, 20., MONO, normal_code, [167., 238.75]),
+                (mono, 20., MONO, normal_code, [217., 195.]),
+                (base.clone(), 20., MONO, normal_code, [117., 195.]),
+                (base.clone(), 20., BODY, normal_code, [117., 107.5]),
+                (base.clone(), 20., MONO, normal_code, [117., 195.]),
+                (base, 20., MONO, bold_code, [117., 238.75]),
+            ] {
+                let mut theme = crate::Theme::default();
+                theme.tokens.typography.mono = family.into();
+                cx.set_global(theme);
+                window.set_rem_size(px(rem_size));
+                let node_cx = NodeContext {
+                    style: Arc::new(TextViewStyle::default().with_inline_code(inline_code)),
+                    ..Default::default()
+                };
+                window.with_text_style(Some(style.subtract(&Default::default())), |window| {
+                    let widths = measure_table_columns(&table, 2, &node_cx, window, cx);
+                    for (width, expected) in widths.iter().zip(expected) {
+                        assert!((width - expected).abs() < 0.01, "{width} != {expected}");
+                    }
+                    let cached = cached_column_widths(&table);
+                    if let Some(previous) = previous.replace(cached.clone()) {
+                        assert!(!Arc::ptr_eq(&previous, &cached));
+                    }
+                    assert_eq!(
+                        measure_table_columns(&table, 2, &node_cx, window, cx),
+                        widths
+                    );
+                    assert!(Arc::ptr_eq(&cached, &cached_column_widths(&table)));
+                });
+            }
+        });
+    }
+
+    #[test]
+    fn table_columns_cache_is_rebuilt_for_reparsed_tables() {
+        use crate::text::format::markdown;
+        use crate::text::inline::test_draw::in_prepaint;
+        use crate::text::inline::test_fonts::{BODY, WideMonoTextSystem};
+        use gpui::{Refineable as _, TestApp, TextStyle};
+
+        let mut node_cx = NodeContext::default();
+        let mut app = TestApp::with_text_system(Arc::new(WideMonoTextSystem));
+        in_prepaint(&mut app, move |window, cx| {
+            let style = TextStyle {
+                font_family: BODY.into(),
+                font_size: px(20.).into(),
+                ..Default::default()
+            };
+            window.with_text_style(Some(style.subtract(&Default::default())), |window| {
+                let mut previous = None;
+                for (text, expected) in [("longer cell", 126.), ("x", CELL_MIN_PX)] {
+                    let source = format!("| h |\n| - |\n| {text} |\n");
+                    let document = markdown::parse(&source, &mut node_cx).unwrap();
+                    let BlockNode::Table(table) = &document.blocks[0] else {
+                        panic!("expected a parsed table");
+                    };
+                    assert!(table.column_widths_cache.0.lock().unwrap().is_none());
+                    assert_eq!(
+                        measure_table_columns(table, 1, &node_cx, window, cx),
+                        vec![expected]
+                    );
+                    let cached = cached_column_widths(table);
+                    if let Some(previous) = previous.replace(cached.clone()) {
+                        assert!(!Arc::ptr_eq(&previous, &cached));
+                    }
+                    assert_eq!(document.source.as_ref(), source);
+                }
+            });
         });
     }
 
@@ -4126,6 +4671,7 @@ mod tests {
             column_aligns: vec![],
             span: None,
             table_data_cache: TableDataCache::default(),
+            column_widths_cache: TableColumnWidthsCache::default(),
         };
         let node_cx = NodeContext::default();
 
@@ -4574,6 +5120,7 @@ mod tests {
             column_aligns: vec![ColumnumnAlign::Left, ColumnumnAlign::Right],
             span: None,
             table_data_cache: TableDataCache::default(),
+            column_widths_cache: TableColumnWidthsCache::default(),
         };
         let block = BlockNode::Table(table);
         assert_eq!(
@@ -4600,6 +5147,7 @@ mod tests {
             column_aligns,
             span: None,
             table_data_cache: TableDataCache::default(),
+            column_widths_cache: TableColumnWidthsCache::default(),
         }
     }
 

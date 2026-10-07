@@ -5,6 +5,7 @@ use gpui::{
     MouseButton, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement,
     StyleRefinement, Styled, Window, div, prelude::FluentBuilder, px, rems,
 };
+pub use gpui_base::TooltipDefaults;
 use gpui_base::{
     Root, Tooltip as BaseTooltip, TooltipOverlay as BaseTooltipOverlay,
     TooltipRequest as BaseTooltipRequest, TooltipTransition as BaseTooltipTransition,
@@ -270,15 +271,17 @@ pub(crate) struct ComponentTooltip {
         Option<(Rc<Box<dyn Action>>, Option<SharedString>)>,
     )>,
     pub builder: Option<Rc<dyn Fn(&mut Window, &mut App) -> AnyView>>,
+    pub show_delay: Option<Duration>,
 }
 
 impl ComponentTooltip {
     /// Apply this tooltip to a `Stateful<Div>` (or any `ManagedTooltipExt` element).
     pub fn apply<E: ManagedTooltipExt>(self, el: E) -> E {
+        let show_delay = self.show_delay;
         if let Some(builder) = self.builder {
-            el.managed_tooltip(move |window, cx| builder(window, cx))
+            el.managed_tooltip_with(None, show_delay, move |window, cx| builder(window, cx))
         } else if let Some((text, action)) = self.text {
-            el.managed_tooltip(move |window, cx| {
+            el.managed_tooltip_with(None, show_delay, move |window, cx| {
                 Tooltip::new(text.clone())
                     .when_some(action.clone(), |this, (action, context)| {
                         this.action(
@@ -324,7 +327,23 @@ pub trait ManagedTooltipExt: StatefulInteractiveElement + crate::ElementExt + Si
         placement: impl Into<ManagedTooltipPlacement>,
         build_tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
     ) -> Self {
-        self.managed_tooltip_with_configuration(placement.into(), None, build_tooltip)
+        self.managed_tooltip_with_configuration(placement.into(), None, None, build_tooltip)
+    }
+
+    /// Attach a managed tooltip with a preferred side and its own show delay,
+    /// overriding [`gpui_base::TooltipDefaults::show_delay`] for this trigger.
+    fn managed_tooltip_with(
+        self,
+        preferred_placement: Option<Placement>,
+        show_delay: Option<Duration>,
+        build_tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
+    ) -> Self {
+        self.managed_tooltip_with_configuration(
+            preferred_placement.into(),
+            None,
+            show_delay,
+            build_tooltip,
+        )
     }
 
     /// Attach a managed tooltip that hides immediately when its trigger is
@@ -335,13 +354,14 @@ pub trait ManagedTooltipExt: StatefulInteractiveElement + crate::ElementExt + Si
         show_delay: Duration,
         build_tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
     ) -> Self {
-        self.managed_tooltip_with_configuration(placement, Some(show_delay), build_tooltip)
+        self.managed_tooltip_with_configuration(placement, Some(show_delay), None, build_tooltip)
     }
 
     fn managed_tooltip_with_configuration(
         self,
         placement: ManagedTooltipPlacement,
         discrete_show_delay: Option<Duration>,
+        show_delay: Option<Duration>,
         build_tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
     ) -> Self {
         let build_tooltip = Rc::new(build_tooltip);
@@ -351,6 +371,10 @@ pub trait ManagedTooltipExt: StatefulInteractiveElement + crate::ElementExt + Si
             let build = build_tooltip.clone();
             let request = BaseTooltipRequest::new(bounds, move |window, cx| build(window, cx))
                 .managed_placement(placement);
+            let request = match show_delay {
+                Some(delay) => request.with_show_delay(delay),
+                None => request,
+            };
             match discrete_show_delay {
                 Some(show_delay) => request.discrete(show_delay),
                 None => request,

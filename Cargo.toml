@@ -17,6 +17,7 @@ members = [
     "examples/hello_world",
     "examples/input",
     "examples/editor",
+    "examples/tig",
     "examples/brush",
     "examples/dock",
     "examples/html",
@@ -36,6 +37,7 @@ members = [
     "examples/table_in_scrollable",
     "examples/markdown_table",
     "examples/ai_recipes",
+    "examples/speech",
     "crates/shell",
     "crates/shell/rquickjs-compat",
     "crates/component-shell",
@@ -47,15 +49,15 @@ publish = false
 edition = "2024"
 
 [workspace.dependencies]
-gpui-kit = { path = "crates/kit", version = "0.7.0" }
-gpui-component = { path = "crates/component", version = "0.7.0" }
-gpui-base = { path = "crates/base", version = "0.7.0" }
-gpui-component-macros = { path = "crates/component-macros", version = "0.7.0" }
-gpui-kit-assets = { path = "crates/assets", version = "0.7.0" }
-gpui-fps = { path = "crates/fps", version = "0.7.0" }
-gpui-shell = { path = "crates/shell", version = "0.7.0" }
-gpui-wry = { path = "crates/webview", version = "0.7.0" }
-gpui-component-shell = { path = "crates/component-shell", version = "0.7.0" }
+gpui-kit = { path = "crates/kit", version = "0.7.1" }
+gpui-component = { path = "crates/component", version = "0.7.1" }
+gpui-base = { path = "crates/base", version = "0.7.1" }
+gpui-component-macros = { path = "crates/component-macros", version = "0.7.1" }
+gpui-kit-assets = { path = "crates/assets", version = "0.7.1" }
+gpui-fps = { path = "crates/fps", version = "0.7.1" }
+gpui-shell = { path = "crates/shell", version = "0.7.1" }
+gpui-wry = { path = "crates/webview", version = "0.7.1" }
+gpui-component-shell = { path = "crates/component-shell", version = "0.7.1" }
 story = { path = "crates/story" }
 
 # Ghostex fork: GPUI comes from Zed's git repository instead of the `gpui-pre-*`
@@ -70,6 +72,11 @@ gpui_web = { git = "https://github.com/zed-industries/zed" }
 gpui_macros = { git = "https://github.com/zed-industries/zed" }
 reqwest_client = { git = "https://github.com/zed-industries/zed" }
 sum-tree = { git = "https://github.com/zed-industries/zed", package = "sum_tree" }
+# GPUI Fast is optional and unused by the Ghostex fork (a host patches `gpui` itself);
+# the crates' `gpui-fast` features still name these, so they stay declared.
+gpui-fast = { package = "gpui-fast", version = "0.1.1", features = ["windows-manifest-provided-by-host"] }
+gpui-fast-platform = { package = "gpui-fast-platform", version = "0.1.1", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui-fast-web = { package = "gpui-fast-web", version = "0.1.1" }
 reqwest = { package = "gpui-pre-reqwest", version = "=0.12.15", default-features = false, features = [
     "charset",
     "http2",
@@ -84,7 +91,7 @@ anyhow = "1"
 instant = { version = "0.1", features = ["wasm-bindgen"] }
 log = "0.4"
 lsp-types = { version = "0.97.0", features = ["proposed"] }
-notify = "7.0.0"
+notify = "8.2.0"
 raw-window-handle = "0.6.2"
 ropey = { version = "=2.0.0-beta.1", features = [
     "metric_chars",
@@ -146,6 +153,9 @@ smol = { opt-level = 3 }
 gpui = { opt-level = 3 }
 gpui_platform = { opt-level = 3 }
 gpui_macros = { opt-level = 3 }
+gpui-fast = { opt-level = 3 }
+gpui-fast-platform = { opt-level = 3 }
+gpui-fast-macros = { opt-level = 3 }
 tree-sitter = { opt-level = 3 }
 sum_tree = { opt-level = 3 }
 ropey = { opt-level = 3 }

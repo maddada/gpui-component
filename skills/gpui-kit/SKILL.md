@@ -133,6 +133,7 @@ fetch the component's `.md` doc.
 | `Editor`      | `input::{Editor, EditorState}`                  | Stateful. Code editor, `tree-sitter` feature |
 | `NumberInput` | `input::{NumberInput, NumberInputEvent}`        | Stateful. Numeric with step                  |
 | `OtpInput`    | `input::OtpInput`                               | Stateful. One-time password                  |
+| `SpeechButton` | `speech::{SpeechButton, SpeechState}`          | Stateful. Dictation, `speech` feature        |
 | `Select`      | `select::{Select, SelectState}`                 | Stateful. Dropdown picker                    |
 | `Combobox`    | `combobox::{Combobox, ComboboxState}`           | Stateful. Searchable select                  |
 | `Checkbox`    | `checkbox::Checkbox`                            | Stateless. `on_click` receives `&bool`       |
@@ -206,6 +207,7 @@ fetch the component's `.md` doc.
 | Component         | Import                                          | Notes                         |
 | ----------------- | ----------------------------------------------- | ----------------------------- |
 | `DataTable`       | `table::{DataTable, TableState, TableDelegate}` | Stateful. Full-featured table |
+| `Diff`            | `diff::{Diff, DiffState, DiffFile}`           | Retained state, `RenderOnce` element. Readonly unified/Git diff display of one or more files, merge conflicts and source files; application supplies the patch |
 | `Table`           | `table::{Table, ...}`                           | Simpler table                 |
 | `VirtualList`     | `{v_virtual_list, h_virtual_list}`              | High-perf large lists         |
 | `List`            | `list::{List, ListState, ListDelegate}`         | Stateful. Searchable list     |

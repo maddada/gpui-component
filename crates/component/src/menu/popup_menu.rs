@@ -406,6 +406,8 @@ impl PopupMenu {
     /// When the menu is dismissed or before an action is triggered, the focus will be returned to this handle.
     ///
     /// Then the action will be dispatched to this handle.
+    /// Submenus without their own action context use the nearest parent's
+    /// explicit context for actions and shortcut hints.
     pub fn action_context(mut self, handle: FocusHandle) -> Self {
         self.action_context = Some(handle);
         self
@@ -955,11 +957,18 @@ impl PopupMenu {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(context) = self.action_context.as_ref() {
+        if let Some(context) = self.resolved_action_context(cx) {
             context.focus(window, cx);
         }
 
         window.dispatch_action(action.boxed_clone(), cx);
+    }
+
+    fn resolved_action_context(&self, cx: &App) -> Option<FocusHandle> {
+        self.action_context.clone().or_else(|| {
+            let parent = self.parent_menu.as_ref()?.upgrade()?;
+            parent.read(cx).resolved_action_context(cx)
+        })
     }
 
     fn set_selected_index(&mut self, ix: usize, cx: &mut Context<Self>) {
@@ -1180,7 +1189,7 @@ impl PopupMenu {
         &self,
         action: Option<Box<dyn Action>>,
         window: &mut Window,
-        _: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> Option<Kbd> {
         let action = action?;
 
@@ -1192,8 +1201,9 @@ impl PopupMenu {
         // every path, so it is the last resort rather than the window's
         // leftover context stack, which only holds the path of whatever
         // element happened to paint last.
+        let action_context = self.resolved_action_context(cx);
         [
-            self.action_context.as_ref(),
+            action_context.as_ref(),
             self.trigger_focus_handle.as_ref(),
             self.previous_focus_handle.as_ref(),
             Some(&self.focus_handle),
@@ -1276,7 +1286,6 @@ impl PopupMenu {
         const INNER_PADDING: Pixels = px(8.);
 
         let is_submenu = matches!(item, PopupMenuItem::Submenu { .. });
-        let group_name = format!("{}:item-{}", cx.entity().entity_id(), ix);
 
         let (item_height, radius) = match self.size {
             Size::Small => (px(20.), options.radius.half()),
@@ -1286,7 +1295,7 @@ impl PopupMenu {
             .appearance
             .map_or(item_height, |style| style.item_height);
 
-        let this = MenuItemElement::new(ix, &group_name)
+        let this = MenuItemElement::new(ix)
             .relative()
             .text_sm()
             .py_0()
@@ -1299,10 +1308,15 @@ impl PopupMenu {
             })
             .items_center()
             .selected(selected)
-            .on_hover(cx.listener(move |this, hovered, _, cx| {
+            .on_hover(cx.listener(move |this, hovered, window, cx| {
                 if *hovered {
                     this.selected_index = Some(ix);
-                } else if !is_submenu && this.selected_index == Some(ix) {
+                } else if !is_submenu
+                    && this.selected_index == Some(ix)
+                    // A key press ends hover under a still pointer; keep the
+                    // highlight so the next arrow key moves on from this item.
+                    && !window.last_input_was_keyboard()
+                {
                     // TODO: Better handle the submenu unselection when hover out
                     this.selected_index = None;
                 }

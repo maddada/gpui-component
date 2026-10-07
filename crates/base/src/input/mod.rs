@@ -45,7 +45,8 @@ pub use inline_replacement::InlineReplacementTooltipHandler;
 pub use inline_tokens::{InlineToken, InlineTokenError, InlineTokenSpan, InputContent};
 pub(crate) use token_presentation::InlineTokenPresentation;
 pub use token_presentation::{
-    InlineTokenClickEvent, InlineTokenClickListener, InlineTokenContext, InlineTokenRenderer,
+    InlineTokenClickEvent, InlineTokenClickListener, InlineTokenContext, InlineTokenHoverEvent,
+    InlineTokenHoverListener, InlineTokenRenderer,
 };
 #[path = "base/kind.rs"]
 mod kind;

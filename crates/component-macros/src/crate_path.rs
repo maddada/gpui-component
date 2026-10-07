@@ -2,30 +2,20 @@ use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 
-/// Resolve the GPUI API exposed to the crate where a macro is expanded.
+/// Resolve the consumer's GPUI API, preferring the Kit facade over a direct engine.
 ///
-/// `gpui-kit` is preferred because it re-exports GPUI and is the only direct
-/// dependency required by kit consumers. The `gpui-pre` package fallback
-/// preserves standalone `gpui-component` consumers, including dependencies
-/// that rename that package to `gpui` (the conventional name). The last
-/// fallback is Zed's own `gpui` package, for workspaces that take GPUI from
-/// Zed's git repository instead of the `gpui-pre` snapshots.
+/// Ghostex fork: the last fallback is Zed's own `gpui` package, for workspaces
+/// that take GPUI from Zed's git repository instead of the `gpui-pre` snapshots.
 pub(crate) fn gpui() -> syn::Result<TokenStream> {
-    match crate_name("gpui-kit") {
-        Ok(found) => Ok(found_crate_path(found)),
-        Err(kit_error) => crate_name("gpui-pre")
-            .or_else(|_| crate_name("gpui"))
-            .map(found_crate_path)
-            .map_err(|gpui_error| {
-                syn::Error::new(
-                    Span::call_site(),
-                    format!(
-                        "IntoPlot requires a direct dependency on `gpui-kit`, `gpui-pre` or `gpui`: \
-                         gpui-kit lookup failed: {kit_error}; gpui lookup failed: {gpui_error}"
-                    ),
-                )
-            }),
+    for package in ["gpui-kit", "gpui-pre", "gpui-fast", "gpui"] {
+        if let Ok(found) = crate_name(package) {
+            return Ok(found_crate_path(found));
+        }
     }
+    Err(syn::Error::new(
+        Span::call_site(),
+        "IntoPlot requires a direct dependency on gpui-kit, gpui-pre, gpui-fast or gpui",
+    ))
 }
 
 fn found_crate_path(found: FoundCrate) -> TokenStream {

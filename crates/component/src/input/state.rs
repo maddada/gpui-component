@@ -1,5 +1,5 @@
 use crate::root::WindowState;
-use gpui::{App, Entity, FocusHandle, Focusable as _, SharedString, Window};
+use gpui::{App, Bounds, Entity, FocusHandle, Focusable as _, Pixels, SharedString, Window};
 use gpui_base::OtpState;
 use ropey::Rope;
 
@@ -52,6 +52,10 @@ macro_rules! dispatch {
 }
 
 impl TextInputState {
+    pub(crate) fn has_selection_focus(&self, window: &Window, cx: &App) -> bool {
+        dispatch!(self, |state| state.read(cx).has_selection_focus(window, cx))
+    }
+
     pub(crate) fn install_token_presentation(
         &self,
         renderer: Option<gpui_base::input::InlineTokenRenderer>,
@@ -79,6 +83,15 @@ impl TextInputState {
     ) {
         dispatch!(self, |state| state
             .update(cx, |state, _| state.install_paste_hook(hook)))
+    }
+
+    pub(crate) fn install_token_hover_presentation(
+        &self,
+        hover_listener: Option<gpui_base::input::InlineTokenHoverListener>,
+        cx: &mut App,
+    ) {
+        dispatch!(self, |state| state.update(cx, |state, _| state
+            .install_token_hover_presentation(hover_listener)))
     }
 
     pub(crate) fn entity_id(&self) -> gpui::EntityId {
@@ -280,6 +293,30 @@ impl From<Entity<EditorState>> for TextInputState {
 }
 
 impl AnyInputState {
+    pub(crate) fn input_bounds(&self, cx: &App) -> Option<Bounds<Pixels>> {
+        match self {
+            Self::Input(state) => Some(state.read(cx).input_bounds()),
+            Self::Textarea(state) => Some(state.read(cx).input_bounds()),
+            Self::Editor(state) => Some(state.read(cx).input_bounds()),
+            Self::Otp(_) => None,
+        }
+    }
+
+    pub(crate) fn set_selection_focus(&self, focus: Option<FocusHandle>, cx: &mut App) {
+        match self {
+            Self::Input(state) => {
+                state.update(cx, |state, cx| state.set_selection_focus(focus, cx))
+            }
+            Self::Textarea(state) => {
+                state.update(cx, |state, cx| state.set_selection_focus(focus, cx))
+            }
+            Self::Editor(state) => {
+                state.update(cx, |state, cx| state.set_selection_focus(focus, cx))
+            }
+            Self::Otp(_) => {}
+        }
+    }
+
     /// Returns the [`InputState`], if this is an `Input` state.
     pub fn as_input(&self) -> Option<&Entity<InputState>> {
         match self {

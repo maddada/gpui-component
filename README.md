@@ -119,7 +119,7 @@ commercial desktop application rather than designed in isolation.
 
 ```toml
 [dependencies]
-gpui-kit = "0.6"
+gpui-kit = "0.7"
 ```
 
 `gpui-kit` always brings in GPUI and `gpui-base`; `gpui-component` and the
@@ -127,6 +127,22 @@ default icon set are on by default. Turn default
 features off to keep only the layers you use. The `gpui-component` features (`inspector`, `decimal`,
 `tree-sitter`, and each `tree-sitter-<language>`) are available under the same
 names.
+
+### GPUI Fast
+
+Enable the optional `gpui-fast` feature to select [GPUI Fast](https://github.com/longbridge/gpui-fast)
+for the core, native platforms, WebAssembly, and every enabled Kit layer:
+
+```toml
+[dependencies]
+gpui-kit = { version = "0.7", features = ["gpui-fast"] }
+```
+
+Keep the same imports, initialization, and test macros; no application `[patch]`
+or crate alias is needed. The default backend remains the pinned upstream GPUI
+snapshot. Cargo features are additive, so upstream packages still compile when
+Fast is selected. See [Getting Started](https://gpui-kit.com/docs/getting-started)
+for feature combinations and comparison commands.
 
 ### Basic Example
 
