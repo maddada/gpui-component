@@ -4,9 +4,8 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AbsoluteLength, AccessibleAction, AnyElement, App, DefiniteLength, Edges, ElementId, Entity,
     Hsla, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Rems, RenderOnce,
-    Role,
-    SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled, TextAlign, TouchPhase,
-    Window, div, px, relative,
+    Role, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled, TextAlign,
+    TouchPhase, Window, div, px, relative,
 };
 
 use crate::button::{Button, ButtonRounded, ButtonVariants as _};
