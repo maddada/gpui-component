@@ -3142,7 +3142,7 @@ fn measure_table_column_extents(
             slot.min = slot.min.max(word_w.min(w) + cell_pad + border);
         }
     }
-    (col_w, custom_cells)
+    col_w
 }
 
 /// The group a table's horizontal scrollbar is revealed by.
@@ -3560,7 +3560,7 @@ impl BlockNode {
                             | BlockNode::Heading { .. }
                             | BlockNode::Blockquote { .. }
                             | BlockNode::CodeBlock(_)
-                            | BlockNode::Custom(_)
+                            | BlockNode::Custom { .. }
                             | BlockNode::Table(_)
                             | BlockNode::HorizontalRule { .. } => {
                                 let block = child.render_block(

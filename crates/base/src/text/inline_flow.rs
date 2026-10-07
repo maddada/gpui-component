@@ -22,7 +22,7 @@ use crate::text::text_view::{
 use crate::text_selection::runs::RunSource;
 
 use super::{
-    inline::{Inline, InlineHighlight, InlineState, text_runs},
+    inline::{Inline, InlineHighlight, InlineState, text_runs, text_size_ranges},
     inline_object::{InlineObject, MeasuredInlineObject},
     node::LinkMark,
     range_highlight::RevealAt,

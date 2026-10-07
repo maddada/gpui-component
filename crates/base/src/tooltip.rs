@@ -462,6 +462,7 @@ impl TooltipOverlay {
             trigger_bounds,
             placement,
             discrete_show_delay: None,
+            show_delay: None,
         });
         self.animation_epoch += 1;
         cx.notify();
