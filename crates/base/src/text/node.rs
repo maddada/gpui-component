@@ -1696,7 +1696,6 @@ pub(crate) struct Table {
     /// The [`TableData`] handed to the `table_actions` hook, kept between
     /// frames; see [`Table::cached_table_data`].
     pub(crate) table_data_cache: TableDataCache,
-    pub(crate) column_widths_cache: TableColumnWidthsCache,
 }
 
 /// Derived state, invisible to `Debug` and equality.
@@ -1726,41 +1725,6 @@ impl std::fmt::Debug for TableDataCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("TableDataCache")
     }
-}
-
-/// Like `TableDataCache`, derived widths survive clones of an unchanged
-/// parsed table. A newly parsed table starts with an empty cache.
-#[derive(Default)]
-pub(crate) struct TableColumnWidthsCache(Mutex<Option<Arc<TableColumnWidths>>>);
-
-impl Clone for TableColumnWidthsCache {
-    fn clone(&self) -> Self {
-        let cached = self.0.lock().ok().and_then(|cache| cache.clone());
-        Self(Mutex::new(cached))
-    }
-}
-
-impl PartialEq for TableColumnWidthsCache {
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
-}
-
-impl std::fmt::Debug for TableColumnWidthsCache {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("TableColumnWidthsCache")
-    }
-}
-
-struct TableColumnWidths {
-    text_system: Weak<gpui::WindowTextSystem>,
-    text_style: gpui::TextStyle,
-    rem_size: Pixels,
-    mono_family: SharedString,
-    inline_code: HighlightStyle,
-    /// Maxima from ordinary text only. Custom cells may shrink after an update.
-    widths: Vec<f32>,
-    custom_cells: Vec<(usize, usize)>,
 }
 
 /// Plain snapshot of a rendered Markdown table, passed to the
@@ -4451,204 +4415,6 @@ mod tests {
         });
     }
 
-    fn cached_column_widths(table: &Table) -> Arc<TableColumnWidths> {
-        table.column_widths_cache.0.lock().unwrap().clone().unwrap()
-    }
-
-    #[test]
-    fn table_columns_cache_preserves_plain_widths_and_clones() {
-        use crate::text::inline::test_draw::in_prepaint;
-        use crate::text::inline::test_fonts::{BODY, WideMonoTextSystem, record_shaped_lines};
-        use gpui::{Refineable as _, TestApp, TextStyle};
-
-        let long = "é界".repeat(2048);
-        let table = table_of(
-            vec![
-                vec![plain_cell(&format!(" \t{long} \nshort\n ")), plain_cell("")],
-                vec![plain_cell("short")],
-                vec![],
-                vec![plain_cell(""), plain_cell("a\nabcdefghijklmnop")],
-            ],
-            vec![],
-        );
-        let uncached = table.clone();
-        let node_cx = NodeContext::default();
-        let mut app = TestApp::with_text_system(Arc::new(WideMonoTextSystem));
-        let (table, node_cx, cached) = in_prepaint(&mut app, move |window, cx| {
-            window.set_rem_size(px(20.));
-            let style = TextStyle {
-                font_family: BODY.into(),
-                font_size: rems(1.).into(),
-                ..Default::default()
-            };
-            let cached =
-                window.with_text_style(Some(style.subtract(&Default::default())), |window| {
-                    let (widths, shaped) = record_shaped_lines(|| {
-                        measure_table_columns(&table, 2, &node_cx, window, cx)
-                    });
-                    assert_eq!(widths, vec![40960. + CELL_PAD_PX + CELL_BORDER_PX, 176.]);
-                    assert!(shaped.iter().any(|line| line == &long));
-                    assert_eq!(
-                        table, uncached,
-                        "derived widths do not change table equality"
-                    );
-                    assert!(uncached.column_widths_cache.0.lock().unwrap().is_none());
-
-                    let cached = cached_column_widths(&table);
-                    let cloned = table.clone();
-                    for same in [&table, &cloned] {
-                        let (again, shaped) = record_shaped_lines(|| {
-                            measure_table_columns(same, 2, &node_cx, window, cx)
-                        });
-                        assert_eq!(again, widths);
-                        assert!(shaped.is_empty());
-                        assert!(Arc::ptr_eq(&cached, &cached_column_widths(same)));
-                    }
-
-                    // A different column count changes which cells draw borders.
-                    assert_eq!(
-                        measure_table_columns(&cloned, 3, &node_cx, window, cx),
-                        vec![widths[0], widths[1] + CELL_BORDER_PX, CELL_MIN_PX]
-                    );
-                    assert!(!Arc::ptr_eq(&cached, &cached_column_widths(&cloned)));
-                    assert!(Arc::ptr_eq(&cached, &cached_column_widths(&table)));
-                    assert!(
-                        measure_table_columns(&Table::default(), 0, &node_cx, window, cx)
-                            .is_empty()
-                    );
-                    cached
-                });
-            (table, node_cx, cached)
-        });
-        // A parsed table can be rendered in another window. Do not reuse a
-        // pixel-width cache from a different window's text system.
-        in_prepaint(&mut app, move |window, cx| {
-            window.set_rem_size(cached.rem_size);
-            window.with_text_style(
-                Some(cached.text_style.subtract(&Default::default())),
-                |window| {
-                    measure_table_columns(&table, 2, &node_cx, window, cx);
-                    assert!(!Arc::ptr_eq(&cached, &cached_column_widths(&table)));
-                },
-            );
-        });
-    }
-
-    #[test]
-    fn table_columns_cache_tracks_typography() {
-        use crate::text::inline::test_draw::in_prepaint;
-        use crate::text::inline::test_fonts::{BODY, MONO, WideMonoTextSystem};
-        use gpui::{Refineable as _, TestApp, TextStyle};
-
-        let code = "0123456789";
-        let mut paragraph = Paragraph::default();
-        paragraph
-            .push(InlineNode::new(code).marks(vec![(0..code.len(), TextMark::default().code())]));
-        let table = table_of(
-            vec![vec![
-                plain_cell(code),
-                TableCell {
-                    children: paragraph,
-                    width: None,
-                },
-            ]],
-            vec![],
-        );
-        let base = TextStyle {
-            font_family: BODY.into(),
-            font_size: rems(1.).into(),
-            ..Default::default()
-        };
-        let mut larger = base.clone();
-        larger.font_size = rems(2.).into();
-        let mut bold = base.clone();
-        bold.font_weight = FontWeight::BOLD;
-        let mut mono = base.clone();
-        mono.font_family = MONO.into();
-        let normal_code = HighlightStyle::default();
-        let bold_code = HighlightStyle {
-            font_weight: Some(FontWeight::BOLD),
-            ..Default::default()
-        };
-        let mut app = TestApp::with_text_system(Arc::new(WideMonoTextSystem));
-        in_prepaint(&mut app, move |window, cx| {
-            let mut previous = None;
-            for (style, rem_size, family, inline_code, expected) in [
-                (base.clone(), 20., MONO, normal_code, [117., 195.]),
-                (base.clone(), 30., MONO, normal_code, [167., 282.5]),
-                (larger, 20., MONO, normal_code, [217., 370.]),
-                (bold, 20., MONO, normal_code, [167., 238.75]),
-                (mono, 20., MONO, normal_code, [217., 195.]),
-                (base.clone(), 20., MONO, normal_code, [117., 195.]),
-                (base.clone(), 20., BODY, normal_code, [117., 107.5]),
-                (base.clone(), 20., MONO, normal_code, [117., 195.]),
-                (base, 20., MONO, bold_code, [117., 238.75]),
-            ] {
-                let mut theme = crate::Theme::default();
-                theme.tokens.typography.mono = family.into();
-                cx.set_global(theme);
-                window.set_rem_size(px(rem_size));
-                let node_cx = NodeContext {
-                    style: Arc::new(TextViewStyle::default().with_inline_code(inline_code)),
-                    ..Default::default()
-                };
-                window.with_text_style(Some(style.subtract(&Default::default())), |window| {
-                    let widths = measure_table_columns(&table, 2, &node_cx, window, cx);
-                    for (width, expected) in widths.iter().zip(expected) {
-                        assert!((width - expected).abs() < 0.01, "{width} != {expected}");
-                    }
-                    let cached = cached_column_widths(&table);
-                    if let Some(previous) = previous.replace(cached.clone()) {
-                        assert!(!Arc::ptr_eq(&previous, &cached));
-                    }
-                    assert_eq!(
-                        measure_table_columns(&table, 2, &node_cx, window, cx),
-                        widths
-                    );
-                    assert!(Arc::ptr_eq(&cached, &cached_column_widths(&table)));
-                });
-            }
-        });
-    }
-
-    #[test]
-    fn table_columns_cache_is_rebuilt_for_reparsed_tables() {
-        use crate::text::format::markdown;
-        use crate::text::inline::test_draw::in_prepaint;
-        use crate::text::inline::test_fonts::{BODY, WideMonoTextSystem};
-        use gpui::{Refineable as _, TestApp, TextStyle};
-
-        let mut node_cx = NodeContext::default();
-        let mut app = TestApp::with_text_system(Arc::new(WideMonoTextSystem));
-        in_prepaint(&mut app, move |window, cx| {
-            let style = TextStyle {
-                font_family: BODY.into(),
-                font_size: px(20.).into(),
-                ..Default::default()
-            };
-            window.with_text_style(Some(style.subtract(&Default::default())), |window| {
-                let mut previous = None;
-                for (text, expected) in [("longer cell", 126.), ("x", CELL_MIN_PX)] {
-                    let source = format!("| h |\n| - |\n| {text} |\n");
-                    let document = markdown::parse(&source, &mut node_cx).unwrap();
-                    let BlockNode::Table(table) = &document.blocks[0] else {
-                        panic!("expected a parsed table");
-                    };
-                    assert!(table.column_widths_cache.0.lock().unwrap().is_none());
-                    assert_eq!(
-                        measure_table_columns(table, 1, &node_cx, window, cx),
-                        vec![expected]
-                    );
-                    let cached = cached_column_widths(table);
-                    if let Some(previous) = previous.replace(cached.clone()) {
-                        assert!(!Arc::ptr_eq(&previous, &cached));
-                    }
-                    assert_eq!(document.source.as_ref(), source);
-                }
-            });
-        });
-    }
-
     /// Table columns are sized from shaped text, so a column of inline code
     /// has to be measured in the code family. Measured in the body font, the
     /// wide-mono test font makes `col_w` come out at half the rendered width.
@@ -4671,7 +4437,6 @@ mod tests {
             column_aligns: vec![],
             span: None,
             table_data_cache: TableDataCache::default(),
-            column_widths_cache: TableColumnWidthsCache::default(),
         };
         let node_cx = NodeContext::default();
 
@@ -5120,7 +4885,6 @@ mod tests {
             column_aligns: vec![ColumnumnAlign::Left, ColumnumnAlign::Right],
             span: None,
             table_data_cache: TableDataCache::default(),
-            column_widths_cache: TableColumnWidthsCache::default(),
         };
         let block = BlockNode::Table(table);
         assert_eq!(
@@ -5147,7 +4911,6 @@ mod tests {
             column_aligns,
             span: None,
             table_data_cache: TableDataCache::default(),
-            column_widths_cache: TableColumnWidthsCache::default(),
         }
     }
 
