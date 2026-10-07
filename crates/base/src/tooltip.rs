@@ -1,7 +1,12 @@
 use std::{rc::Rc, time::Duration};
 
 use gpui::{
-    AnyElement, AnyView, App, Bounds, Context, DispatchPhase, Display, Div, Edges, Element, ElementId, Entity, GlobalElementId, Half as _, InspectorElementId, InteractiveElement, IntoElement, LayoutId, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Position, Render, RenderOnce, Role, ScrollWheelEvent, Size, Stateful, StatefulInteractiveElement, Style, Styled, Task, Window, canvas, deferred, div, native_occlusion_row_gap, nudge_out_of_native_occlusions, point, prelude::FluentBuilder as _, px, Global,
+    AnyElement, AnyView, App, Bounds, Context, DispatchPhase, Display, Div, Edges, Element,
+    ElementId, Entity, Global, GlobalElementId, Half as _, InspectorElementId, InteractiveElement,
+    IntoElement, LayoutId, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Position,
+    Render, RenderOnce, Role, ScrollWheelEvent, Size, Stateful, StatefulInteractiveElement, Style,
+    Styled, Task, Window, canvas, deferred, div, native_occlusion_row_gap,
+    nudge_out_of_native_occlusions, point, prelude::FluentBuilder as _, px,
 };
 
 use crate::{

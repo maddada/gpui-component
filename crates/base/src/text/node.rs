@@ -2,16 +2,21 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     ops::Range,
-    sync::{Arc, Mutex, OnceLock, Weak},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use gpui::{
-    AnyElement, App, DefiniteLength, Div, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla, Image, ImageFormat, ImageSource, InteractiveElement as _, IntoElement, IsZero as _, Length, MouseButton, ObjectFit, Overflow, ParentElement, Pixels, Rems, ScrollHandle, SharedString, SharedUri, StatefulInteractiveElement, StyleRefinement, Styled, StyledImage as _, WhiteSpace, Window, div, img, prelude::FluentBuilder as _, px, relative, rems, Axis, Bounds, Element, GlobalElementId, InspectorElementId, LayoutId, Point, TextStyleRefinement,
+    AnyElement, App, Bounds, DefiniteLength, Div, Element, ElementId, FontStyle, FontWeight,
+    GlobalElementId, HighlightStyle, Hsla, Image, ImageFormat, ImageSource, InspectorElementId,
+    InteractiveElement as _, IntoElement, IsZero as _, LayoutId, Length, MouseButton, ObjectFit,
+    Overflow, ParentElement, Pixels, Point, Rems, ScrollHandle, SharedString, SharedUri,
+    StatefulInteractiveElement, StyleRefinement, Styled, StyledImage as _, WhiteSpace, Window, div,
+    img, prelude::FluentBuilder as _, px, relative, rems,
 };
 use markdown::mdast;
 
 use crate::{
-    Scrollbar, ScrollbarMode, ScrollbarThumbStyle, StyledExt, h_flex, GlobalState, ScrollableMask,
+    GlobalState, Scrollbar, ScrollbarMode, ScrollbarThumbStyle, StyledExt, h_flex,
     scrollable_mask::horizontal_scroll_area,
     text::{
         CodeBlockActionsFn, CodeBlockHighlighterFn, CodeBlockWrapFn, LinkClickHandlerFn,
@@ -3350,11 +3355,7 @@ impl BlockNode {
     /// reports its text's width, and still shrinks to the space the marker
     /// leaves once the row has a width.
     fn list_item_text(content: AnyElement) -> Div {
-        div()
-            .flex_auto()
-            .min_w_0()
-            .overflow_hidden()
-            .child(content)
+        div().flex_auto().min_w_0().overflow_hidden().child(content)
     }
 
     /// A block an item holds under its first line (a continuation paragraph,
