@@ -4,10 +4,11 @@ use quote::quote;
 
 /// Resolve the consumer's GPUI API, preferring the Kit facade over a direct engine.
 ///
-/// Ghostex fork: the last fallback is Zed's own `gpui` package, for workspaces
-/// that take GPUI from Zed's git repository instead of the `gpui-pre` snapshots.
+/// Ghostex fork: Zed's own `gpui` package is looked up before `gpui-fast`, for workspaces
+/// that take GPUI from Zed's git repository: the crates declare an optional `gpui-fast`
+/// dependency, which the lookup would otherwise find although it is not linked.
 pub(crate) fn gpui() -> syn::Result<TokenStream> {
-    for package in ["gpui-kit", "gpui-pre", "gpui-fast", "gpui"] {
+    for package in ["gpui-kit", "gpui-pre", "gpui", "gpui-fast"] {
         if let Ok(found) = crate_name(package) {
             return Ok(found_crate_path(found));
         }
