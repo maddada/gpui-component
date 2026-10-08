@@ -26,6 +26,7 @@ pub struct Editor {
     tab_index: isize,
     role: RoleOverride,
     aria_label: Option<SharedString>,
+    scrollbar_show: Option<crate::scroll::ScrollbarMode>,
 
     /// An optional context menu builder to allow a custom context menu.
     ///
@@ -48,6 +49,7 @@ impl Editor {
             tab_index: 0,
             role: RoleOverride::default(),
             aria_label: None,
+            scrollbar_show: None,
             context_menu_builder: None,
             paste_handler: None,
         }
@@ -95,6 +97,13 @@ impl Editor {
 
     pub fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
         self.aria_label = Some(label.into());
+        self
+    }
+
+    /// Set when the scrollbar shows, overriding the theme's
+    /// [`ScrollbarMode`](crate::scroll::ScrollbarMode).
+    pub fn scrollbar_show(mut self, mode: crate::scroll::ScrollbarMode) -> Self {
+        self.scrollbar_show = Some(mode);
         self
     }
 
@@ -152,6 +161,7 @@ impl RenderOnce for Editor {
             .role(self.role)
             .when_some(self.height, |this, height| this.h(height))
             .when_some(self.aria_label, |this, label| this.aria_label(label))
+            .when_some(self.scrollbar_show, |this, mode| this.scrollbar_show(mode))
             .when_some(self.context_menu_builder, |this, build| {
                 this.context_menu(move |menu, window, cx| build(menu, window, cx))
             })
