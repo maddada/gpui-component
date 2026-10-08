@@ -22,7 +22,7 @@ pub struct InlineCodeStyle {
     pub radius: Pixels,
     pub background: Hsla,
     pub border_color: Hsla,
-    /// Draw a small square of the colour a span names (`#1d4ed8`, `#fff`)
+    /// Draw a small square of the colour a span names (`#1d4ed8`)
     /// before its text.
     pub swatches: bool,
     /// The colour this particular span named, filled in while laying it out.

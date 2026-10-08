@@ -22,33 +22,27 @@ use super::{
 
 /// The colour an inline-code span names, when naming one is all it does.
 ///
-/// CSS hex only, in the four lengths CSS allows. A span holding anything else
-/// (a command, a path, a sentence) is ordinary inline code.
+/// CDXC:SessionChat 2026-10-09 DECISION:
+/// User: "please only for # with 6 and 8 chars then show the color thing otherwise dont show the
+/// color thing in the gpui chat view". `#RRGGBB` and `#RRGGBBAA` only: `#1234` is a PR number, not
+/// a colour (GitHub issue #206). A span holding anything else (a command, a path, a sentence) is
+/// ordinary inline code.
 pub(super) fn swatch_color(text: &str) -> Option<Hsla> {
     let hex = text.trim().strip_prefix('#')?;
     if !hex.chars().all(|character| character.is_ascii_hexdigit()) {
         return None;
     }
     let channel = |index: usize| -> Option<f32> {
-        let value = if hex.len() < 6 {
-            let digit = hex.chars().nth(index)?.to_digit(16)?;
-            digit * 17
-        } else {
-            u32::from_str_radix(hex.get(index * 2..index * 2 + 2)?, 16).ok()?
-        };
+        let value = u32::from_str_radix(hex.get(index * 2..index * 2 + 2)?, 16).ok()?;
         Some(value as f32 / 255.0)
     };
     match hex.len() {
-        3 | 4 | 6 | 8 => Some(
+        6 | 8 => Some(
             gpui::Rgba {
                 r: channel(0)?,
                 g: channel(1)?,
                 b: channel(2)?,
-                a: if hex.len() == 4 || hex.len() == 8 {
-                    channel(3)?
-                } else {
-                    1.0
-                },
+                a: if hex.len() == 8 { channel(3)? } else { 1.0 },
             }
             .into(),
         ),
@@ -57,9 +51,9 @@ pub(super) fn swatch_color(text: &str) -> Option<Hsla> {
 }
 
 /// Every hex colour written in a run of text, by the rule a chat renderer uses:
-/// a `#` that does not follow a word character, `/` or `#`, then exactly three,
-/// four, six or eight hex digits, with no word character, `/` or `-` after
-/// them.
+/// a `#` that does not follow a word character, `/` or `#`, then exactly six or
+/// eight hex digits (see [`swatch_color`]), with no word character, `/` or `-`
+/// after them.
 pub(super) fn hex_colors(text: &str) -> Vec<Range<usize>> {
     let bytes = text.as_bytes();
     let word = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
@@ -82,7 +76,7 @@ pub(super) fn hex_colors(text: &str) -> Vec<Range<usize>> {
             let next = bytes[end];
             !(word(next) || next == b'/' || next == b'-')
         };
-        if opens && closes && matches!(end - index - 1, 3 | 4 | 6 | 8) {
+        if opens && closes && matches!(end - index - 1, 6 | 8) {
             result.push(index..end);
             index = end;
             continue;
