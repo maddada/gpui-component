@@ -28,6 +28,9 @@ pub(crate) type CodeBlockHighlighterFn =
 /// Type for the per-block decision of whether a fenced block soft-wraps.
 pub(crate) type CodeBlockWrapFn = dyn Fn(&CodeBlock) -> bool + Send + Sync;
 
+/// Type for the per-block height a fenced block's code is capped at.
+pub(crate) type CodeBlockMaxHeightFn = dyn Fn(&CodeBlock) -> Option<Pixels> + Send + Sync;
+
 /// Application-wide defaults for TextViews that do not provide explicit
 /// presentation or syntax-highlighting overrides.
 #[derive(Clone, Default)]
@@ -180,6 +183,7 @@ pub struct TextView {
     max_lines: Option<usize>,
     code_block_actions: Option<Arc<CodeBlockActionsFn>>,
     code_block_wrap: Option<Arc<CodeBlockWrapFn>>,
+    code_block_max_height: Option<Arc<CodeBlockMaxHeightFn>>,
     code_block_highlighter: Option<Arc<CodeBlockHighlighterFn>>,
     table_actions: Option<Arc<TableActionsFn>>,
     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
@@ -232,6 +236,7 @@ impl TextView {
             max_lines: None,
             code_block_actions: None,
             code_block_wrap: None,
+            code_block_max_height: None,
             code_block_highlighter: None,
             table_actions: None,
             link_click_handler: None,
@@ -261,6 +266,7 @@ impl TextView {
             max_lines: None,
             code_block_actions: None,
             code_block_wrap: None,
+            code_block_max_height: None,
             code_block_highlighter: None,
             table_actions: None,
             link_click_handler: None,
@@ -290,6 +296,7 @@ impl TextView {
             max_lines: None,
             code_block_actions: None,
             code_block_wrap: None,
+            code_block_max_height: None,
             code_block_highlighter: None,
             table_actions: None,
             link_click_handler: None,
@@ -403,6 +410,20 @@ impl TextView {
         F: Fn(&CodeBlock) -> bool + Send + Sync + 'static,
     {
         self.code_block_wrap = Some(Arc::new(f));
+        self
+    }
+
+    /// Cap a fenced block's code at a height, per block. A capped block
+    /// scrolls its code under its header, and the wheel goes on to the
+    /// scroller around the text view once the code reaches its edge.
+    ///
+    /// Without this no block is capped. `None` leaves a block at its full
+    /// height, which is how a host shows a block the reader expanded.
+    pub fn code_block_max_height<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&CodeBlock) -> Option<Pixels> + Send + Sync + 'static,
+    {
+        self.code_block_max_height = Some(Arc::new(f));
         self
     }
 
@@ -778,6 +799,7 @@ impl Element for TextView {
         state.update(cx, |state, cx| {
             state.code_block_actions = self.code_block_actions.clone();
             state.code_block_wrap = self.code_block_wrap.clone();
+            state.code_block_max_height = self.code_block_max_height.clone();
             state.code_block_highlighter = code_block_highlighter;
             state.table_actions = self.table_actions.clone();
             state.link_click_handler = self.link_click_handler.clone();

@@ -2231,6 +2231,49 @@ impl CodeBlock {
             )
             .into_any_element()
         };
+        // A host may cap the code at a height (`TextView::code_block_max_height`).
+        // The code then scrolls under the header, with a scrollbar, and the
+        // vertical mask hands the wheel to the scroller around the text view
+        // once the code reaches its edge, as a nested scroller chains into the
+        // page (upstream gpui-kit #3322 caps the whole block instead).
+        let body = match node_cx
+            .code_block_max_height
+            .as_ref()
+            .and_then(|max_height| max_height(&self))
+        {
+            None => body,
+            Some(max_height) => {
+                let scroll_handle = window
+                    .use_keyed_state(
+                        block_element_id("codeblock-vscroll-state", self.span, options.ix),
+                        cx,
+                        |_, _| ScrollHandle::default(),
+                    )
+                    .read(cx)
+                    .clone();
+                let id = block_element_id("codeblock-vscroll", self.span, options.ix);
+                let scrollbar = Scrollbar::vertical(&scroll_handle);
+                let scrollbar = match style.table_scrollbar() {
+                    Some(thickness) => scrollbar.thickness(thickness),
+                    None => scrollbar,
+                };
+                div()
+                    .w_full()
+                    .relative()
+                    .child(
+                        div()
+                            .id(id.clone())
+                            .w_full()
+                            .max_h(max_height)
+                            .overflow_hidden()
+                            .track_scroll(&scroll_handle)
+                            .child(body),
+                    )
+                    .child(crate::ScrollableMask::new(gpui::Axis::Vertical, &scroll_handle).id(id))
+                    .child(div().absolute().inset_0().child(scrollbar))
+                    .into_any_element()
+            }
+        };
         // The id scopes the caller's action ids per code block, so plain ids
         // like `"copy"` don't collide across blocks; without actions nothing
         // under the block needs element state.
@@ -2279,6 +2322,7 @@ pub(crate) struct NodeContext {
     pub(crate) style: Arc<TextViewStyle>,
     pub(crate) code_block_actions: Option<Arc<CodeBlockActionsFn>>,
     pub(crate) code_block_wrap: Option<Arc<CodeBlockWrapFn>>,
+    pub(crate) code_block_max_height: Option<Arc<super::text_view::CodeBlockMaxHeightFn>>,
     pub(crate) code_block_highlighter: Option<Arc<CodeBlockHighlighterFn>>,
     pub(crate) table_actions: Option<Arc<TableActionsFn>>,
     pub(crate) image_source: Option<Arc<super::text_view::ImageSourceFn>>,
@@ -3354,8 +3398,18 @@ impl BlockNode {
     /// the widest paragraph outside the list. With an `auto` basis the column
     /// reports its text's width, and still shrinks to the space the marker
     /// leaves once the row has a width.
-    fn list_item_text(content: AnyElement) -> Div {
-        div().flex_auto().min_w_0().overflow_hidden().child(content)
+    ///
+    /// A done task's text steps back to the muted color so the open ones
+    /// stand out (upstream gpui-kit #3371).
+    fn list_item_text(content: AnyElement, checked: Option<bool>, style: &TextViewStyle) -> Div {
+        div()
+            .flex_auto()
+            .min_w_0()
+            .overflow_hidden()
+            .when(checked == Some(true), |this| {
+                this.text_color(style.muted_foreground())
+            })
+            .child(content)
     }
 
     /// A block an item holds under its first line (a continuation paragraph,
@@ -3375,7 +3429,7 @@ impl BlockNode {
             .when(!options.todo && checked.is_none(), |this| {
                 this.child(Self::list_marker(ix, options, style, true))
             })
-            .child(Self::list_item_text(content))
+            .child(Self::list_item_text(content, checked, style))
     }
 
     fn render_list_item_row(
@@ -3430,7 +3484,7 @@ impl BlockNode {
                         ),
                 )
             })
-            .child(Self::list_item_text(content))
+            .child(Self::list_item_text(content, checked, style))
     }
 
     fn render_list_item(

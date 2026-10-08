@@ -117,8 +117,9 @@ pub(super) fn combine_highlights(
 }
 
 /// Layers a streamed fade-in over `highlights`: text inside each fade range
-/// loses that share of its color, and a highlight background fades with it so
-/// an inline code chip does not appear before its text.
+/// loses that share of its color, and a highlight background or decoration
+/// color fades with it so an inline code chip or a link underline does not
+/// appear before its text.
 pub(super) fn fade_highlights(
     highlights: Vec<(Range<usize>, InlineHighlight)>,
     fades: &[(Range<usize>, f32)],
@@ -136,11 +137,23 @@ pub(super) fn fade_highlights(
         )
     });
     let mut combined = combine_highlights(highlights, fade_highlights);
+    // GPUI fades only the glyph color, so explicit decoration colors fade
+    // here too, or a link underline would show before its text does
+    // (upstream gpui-kit #3371).
     for (_, highlight) in &mut combined {
-        if let Some(fade_out) = highlight.style.fade_out
-            && let Some(background) = highlight.style.background_color.as_mut()
+        let Some(fade_out) = highlight.style.fade_out else {
+            continue;
+        };
+        let style = &mut highlight.style;
+        for color in [
+            style.background_color.as_mut(),
+            style.underline.as_mut().and_then(|u| u.color.as_mut()),
+            style.strikethrough.as_mut().and_then(|s| s.color.as_mut()),
+        ]
+        .into_iter()
+        .flatten()
         {
-            background.fade_out(fade_out);
+            color.fade_out(fade_out);
         }
     }
     combined

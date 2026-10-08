@@ -154,6 +154,16 @@ impl TextView {
         self.inner = self.inner.code_block_wrap(f);
         self
     }
+
+    /// Caps a fenced block's code at a height, per block; a capped block
+    /// scrolls its code under its header. `None` leaves a block whole.
+    pub fn code_block_max_height<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&CodeBlock) -> Option<gpui::Pixels> + Send + Sync + 'static,
+    {
+        self.inner = self.inner.code_block_max_height(f);
+        self
+    }
     /// Renders an element below every table.
     pub fn table_actions<F, E>(mut self, f: F) -> Self
     where
