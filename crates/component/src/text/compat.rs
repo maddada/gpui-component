@@ -106,6 +106,12 @@ impl TextView {
         self.inner = self.inner.scrollable(value);
         self
     }
+    /// Parses the text on the UI thread whatever its size, so the first layout has the exact
+    /// height; see [`gpui_base::TextView::parse_synchronously`].
+    pub fn parse_synchronously(mut self, value: bool) -> Self {
+        self.inner = self.inner.parse_synchronously(value);
+        self
+    }
     /// Fades streamed text in the way Claude reveals a reply: the words a `set_text` or
     /// `push_str` adds start transparent and light up one after another, each reaching full
     /// color over 280 ms. A chunk far larger than one keystroke burst -- a backfill, a replay --

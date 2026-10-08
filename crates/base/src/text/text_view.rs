@@ -190,6 +190,7 @@ pub struct TextView {
     markdown_extensions: Arc<MarkdownExtensions>,
     motion: Option<TextViewMotion>,
     find: Option<TextFind>,
+    parse_synchronously: bool,
 }
 
 /// A plugin that can configure a [`TextView`].
@@ -241,6 +242,7 @@ impl TextView {
             markdown_extensions: Arc::default(),
             motion: None,
             find: None,
+            parse_synchronously: false,
         }
     }
 
@@ -269,6 +271,7 @@ impl TextView {
             markdown_extensions: Arc::default(),
             motion: None,
             find: None,
+            parse_synchronously: false,
         }
     }
 
@@ -297,6 +300,7 @@ impl TextView {
             markdown_extensions: Arc::default(),
             motion: None,
             find: None,
+            parse_synchronously: false,
         }
     }
 
@@ -507,6 +511,15 @@ impl TextView {
         self
     }
 
+    /// Parses the text on the UI thread whatever its size, so the first
+    /// layout has the exact height. A large text otherwise parses in the
+    /// background and lays out empty until it arrives, which a virtual list
+    /// that caches its rows' heights keeps as the row's height.
+    pub fn parse_synchronously(mut self, value: bool) -> Self {
+        self.parse_synchronously = value;
+        self
+    }
+
     /// Replace the Markdown extension registry.
     pub fn markdown_extensions(mut self, extensions: MarkdownExtensions) -> Self {
         self.markdown_extensions = Arc::new(extensions);
@@ -701,16 +714,18 @@ impl Element for TextView {
         } else {
             let default_format = self.format.unwrap_or(TextViewFormat::Markdown);
             let default_text = self.text.clone().unwrap_or_default();
+            let parse_synchronously = self.parse_synchronously;
 
             let state = window.use_keyed_state(
                 SharedString::from(format!("{}/state", self.id)),
                 cx,
                 move |_, cx| {
-                    if default_format == TextViewFormat::Markdown {
-                        TextViewState::markdown(default_text.as_str(), cx)
-                    } else {
-                        TextViewState::html(default_text.as_str(), cx)
-                    }
+                    TextViewState::new(
+                        default_format,
+                        default_text.as_str(),
+                        parse_synchronously,
+                        cx,
+                    )
                 },
             );
             self.state = Some(state.clone());
@@ -777,6 +792,7 @@ impl Element for TextView {
             state.selection_format = self.selection_format;
             state.scrollable = self.scrollable;
             state.max_lines = max_lines;
+            state.parse_synchronously = self.parse_synchronously;
             if let Some(text_view_style) = text_view_style {
                 state.selection_revision = state.selection_revision.wrapping_add(1);
                 state.text_view_style = text_view_style;

@@ -160,6 +160,9 @@ pub struct TextViewState {
     pub(super) pending_reveal: Option<PendingReveal>,
     pub(super) selection_revision: usize,
     compatible_layout_update: bool,
+    /// Parse every full replacement on the UI thread, whatever its size
+    /// (`TextView::parse_synchronously`).
+    pub(super) parse_synchronously: bool,
     layout_text_style: Option<(gpui::TextStyle, Pixels)>,
     parsed_error: Option<SharedString>,
     tx: Sender<UpdateOptions>,
@@ -180,16 +183,22 @@ struct FindDrawn {
 impl TextViewState {
     /// Create a Markdown TextViewState.
     pub fn markdown(text: &str, cx: &mut Context<Self>) -> Self {
-        Self::new(TextViewFormat::Markdown, text, cx)
+        Self::new(TextViewFormat::Markdown, text, false, cx)
     }
 
     /// Create a HTML TextViewState.
     pub fn html(text: &str, cx: &mut Context<Self>) -> Self {
-        Self::new(TextViewFormat::Html, text, cx)
+        Self::new(TextViewFormat::Html, text, false, cx)
     }
 
-    /// Create a new TextViewState.
-    fn new(format: TextViewFormat, text: &str, cx: &mut Context<Self>) -> Self {
+    /// Create a new TextViewState. A `TextView` element creates its own with
+    /// its parse policy, so the first layout already honours it.
+    pub(super) fn new(
+        format: TextViewFormat,
+        text: &str,
+        parse_synchronously: bool,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
         let selection_adapter = TextViewSelectionAdapter::new(cx.entity().downgrade(), cx);
 
@@ -255,6 +264,7 @@ impl TextViewState {
             pending_reveal: None,
             selection_revision: 0,
             compatible_layout_update: false,
+            parse_synchronously,
             layout_text_style: None,
             tx,
             _parse_task,
@@ -503,7 +513,8 @@ impl TextViewState {
             self.full_update_revision = self.revision;
             self.selection_revision = self.selection_revision.wrapping_add(1);
         }
-        let parse_synchronously = !append && text.len() <= MAX_SYNC_FULL_REPLACE_BYTES;
+        let parse_synchronously =
+            !append && (self.parse_synchronously || text.len() <= MAX_SYNC_FULL_REPLACE_BYTES);
         let update_options = UpdateOptions {
             revision: self.revision,
             append,
