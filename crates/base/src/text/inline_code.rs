@@ -20,39 +20,59 @@ use super::{
     inline_flow::InlineFlowItem,
 };
 
-/// The colour an inline-code span names, when naming one is all it does.
+/// Whether `hex` (the digits after a `#`) is a colour: a valid CSS hex length
+/// (3, 4, 6 or 8) of hex digits, where the short and the odd-looking lengths
+/// need a letter a-f so a bare number stays a number.
 ///
 /// CDXC:SessionChat 2026-10-09 DECISION:
 /// User: "please only for # with 6 and 8 chars then show the color thing otherwise dont show the
-/// color thing in the gpui chat view". `#RRGGBB` and `#RRGGBBAA` only: `#1234` is a PR number, not
-/// a colour (GitHub issue #206). A span holding anything else (a command, a path, a sentence) is
-/// ordinary inline code.
+/// color thing in the gpui chat view", then: "for #123 if there's a letter in it then it's def a
+/// color so show the color thing if you can for that if u get me". Six or eight hex digits are a
+/// colour (`#123456`); `#abc`, `#1a2`, `#fa0c` (three or four digits with at least one letter a-f)
+/// are colours too; any other all-digit token (`#1234`, `#123`) is a PR or issue number (GitHub
+/// issue #206), and a token with a non-hex letter (`#todo`) is neither. A span holding anything
+/// else (a command, a path, a sentence) is ordinary inline code.
+fn is_hex_color_digits(hex: &str) -> bool {
+    hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && match hex.len() {
+            6 | 8 => true,
+            3 | 4 => hex.bytes().any(|byte| byte.is_ascii_alphabetic()),
+            _ => false,
+        }
+}
+
+/// The colour an inline-code span names, when naming one is all it does.
 pub(super) fn swatch_color(text: &str) -> Option<Hsla> {
     let hex = text.trim().strip_prefix('#')?;
-    if !hex.chars().all(|character| character.is_ascii_hexdigit()) {
+    if !is_hex_color_digits(hex) {
         return None;
     }
+    // `#rgb` and `#rgba` repeat each digit; the others carry two per channel.
+    let short = hex.len() <= 4;
     let channel = |index: usize| -> Option<f32> {
-        let value = u32::from_str_radix(hex.get(index * 2..index * 2 + 2)?, 16).ok()?;
+        let value = if short {
+            let nibble = u32::from_str_radix(hex.get(index..index + 1)?, 16).ok()?;
+            nibble * 17
+        } else {
+            u32::from_str_radix(hex.get(index * 2..index * 2 + 2)?, 16).ok()?
+        };
         Some(value as f32 / 255.0)
     };
-    match hex.len() {
-        6 | 8 => Some(
-            gpui::Rgba {
-                r: channel(0)?,
-                g: channel(1)?,
-                b: channel(2)?,
-                a: if hex.len() == 8 { channel(3)? } else { 1.0 },
-            }
-            .into(),
-        ),
-        _ => None,
-    }
+    let has_alpha = matches!(hex.len(), 4 | 8);
+    Some(
+        gpui::Rgba {
+            r: channel(0)?,
+            g: channel(1)?,
+            b: channel(2)?,
+            a: if has_alpha { channel(3)? } else { 1.0 },
+        }
+        .into(),
+    )
 }
 
 /// Every hex colour written in a run of text, by the rule a chat renderer uses:
-/// a `#` that does not follow a word character, `/` or `#`, then exactly six or
-/// eight hex digits (see [`swatch_color`]), with no word character, `/` or `-`
+/// a `#` that does not follow a word character, `/` or `#`, then the hex digits
+/// of a colour (see [`swatch_color`]), with no word character, `/` or `-`
 /// after them.
 pub(super) fn hex_colors(text: &str) -> Vec<Range<usize>> {
     let bytes = text.as_bytes();
@@ -76,7 +96,7 @@ pub(super) fn hex_colors(text: &str) -> Vec<Range<usize>> {
             let next = bytes[end];
             !(word(next) || next == b'/' || next == b'-')
         };
-        if opens && closes && matches!(end - index - 1, 6 | 8) {
+        if opens && closes && is_hex_color_digits(&text[index + 1..end]) {
             result.push(index..end);
             index = end;
             continue;
@@ -90,7 +110,8 @@ pub(super) fn hex_colors(text: &str) -> Vec<Range<usize>> {
 /// number it names, by the whole-token rule [`hex_colors`] uses: a `#` that
 /// does not follow a word character, `/`, `#` or `&`, then decimal digits with
 /// no word character, `/` or `-` after them. Six and eight digits are a hex
-/// colour (its swatch) and a leading zero names no issue, so neither links.
+/// colour (its swatch) and a leading zero names no issue, so neither links; a
+/// token with a letter a-f is a colour or nothing, never a number.
 /// `owner/repo#12` is left alone: its `#` follows a word character.
 pub(crate) fn issue_references(text: &str) -> Vec<(Range<usize>, &str)> {
     let bytes = text.as_bytes();
