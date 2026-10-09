@@ -109,15 +109,20 @@ struct InlineFlowFrameState {
     /// What `layouts` were laid out from. A frame whose items or typography
     /// differ starts over.
     key: Option<FlowLayoutKey>,
-    /// The layouts of `key`, one per wrap width the flow was measured at:
-    /// taffy probes a flow at more than one width in a frame (unconstrained,
-    /// then the column's). A frame that changes nothing finds every width
-    /// here and wraps and shapes nothing.
+    /// The layouts of `key`, one per wrap width the flow was measured at,
+    /// least recently used first: taffy probes a flow at more than one width
+    /// in a frame (unconstrained, then the column's). A frame that changes
+    /// nothing finds every width here and wraps and shapes nothing.
     layouts: Vec<Rc<InlineFlowLayout>>,
 }
 
-/// How many wrap widths a flow keeps a layout for.
-const LAYOUTS_PER_FLOW: usize = 3;
+/// How many wrap widths a flow keeps a layout for: at least as many as one
+/// frame measures it at. A flow inside nested flex boxes (a chat bubble with
+/// a maximum width in a list row) is measured at about seven, among them a
+/// zero and a min-content probe; keeping fewer evicted each width before the
+/// next frame asked for it again, so every frame laid the whole flow out
+/// several times over, which a long paragraph made a frame-long stall.
+const LAYOUTS_PER_FLOW: usize = 10;
 
 impl InlineFlowFrameState {
     fn fragment_state(&mut self, fragment_ix: usize) -> Arc<Mutex<InlineState>> {
@@ -140,16 +145,20 @@ impl InlineFlowFrameState {
         self.key = Some(key);
     }
 
-    /// The layout at `wrap_width`, if the key was laid out there already.
-    fn layout_at(&self, wrap_width: Option<Pixels>) -> Option<Rc<InlineFlowLayout>> {
-        self.layouts
+    /// The layout at `wrap_width`, if the key was laid out there already,
+    /// kept as the most recently used.
+    fn layout_at(&mut self, wrap_width: Option<Pixels>) -> Option<Rc<InlineFlowLayout>> {
+        let ix = self
+            .layouts
             .iter()
-            .find(|layout| layout.wrap_width == wrap_width)
-            .cloned()
+            .position(|layout| layout.wrap_width == wrap_width)?;
+        let layout = self.layouts.remove(ix);
+        self.layouts.push(layout.clone());
+        Some(layout)
     }
 
-    /// Keeps `layout`, in place of the oldest one when the flow has been
-    /// measured at more widths than it keeps.
+    /// Keeps `layout`, in place of the least recently used one when the flow
+    /// has been measured at more widths than it keeps.
     fn push_layout(&mut self, layout: Rc<InlineFlowLayout>) {
         if self.layouts.len() >= LAYOUTS_PER_FLOW {
             self.layouts.remove(0);

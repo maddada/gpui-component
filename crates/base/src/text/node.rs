@@ -2821,7 +2821,10 @@ impl Paragraph {
                         state: inline_node.state.clone(),
                         text: std::mem::take(&mut text).into(),
                         links: std::mem::take(&mut links),
-                        highlights: fade_highlights(std::mem::take(&mut highlights), &item_fades),
+                        highlights: fade_highlights(
+                            combine_highlights(std::mem::take(&mut highlights), []),
+                            &item_fades,
+                        ),
                         backgrounds: item_backgrounds,
                         reveal: item_reveal,
                         source_offset: 0,
@@ -2878,7 +2881,7 @@ impl Paragraph {
                         text: text.clone().into(),
                         links: links.clone(),
                         highlights: fade_highlights(
-                            highlights.clone(),
+                            combine_highlights(highlights.clone(), []),
                             &slice_fades(fades, consumed, consumed + text.len()),
                         ),
                         backgrounds: slice_backgrounds(
@@ -2931,7 +2934,10 @@ impl Paragraph {
                     node_highlights.push((inner_range, highlight));
                 }
 
-                highlights = combine_highlights(highlights, node_highlights);
+                // Merged once per text item: inline nodes never overlap, and
+                // merging after every node sorted the whole paragraph's
+                // highlights again each time, quadratic in a long paragraph.
+                highlights.extend(node_highlights);
                 offset += text_len;
             }
         }
@@ -2941,7 +2947,7 @@ impl Paragraph {
                 state.set_text(text.clone().into());
             }
             let highlights = fade_highlights(
-                highlights,
+                combine_highlights(highlights, []),
                 &slice_fades(fades, consumed, consumed + text.len()),
             );
             let backgrounds = slice_backgrounds(backgrounds, consumed, consumed + text.len());
