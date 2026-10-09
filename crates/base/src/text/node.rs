@@ -1339,6 +1339,7 @@ struct ParagraphRender {
     highlights: Vec<(Range<usize>, InlineHighlight)>,
     /// Links as written, before reference resolution.
     links: Vec<(Range<usize>, LinkMark)>,
+    issue_link_base: Option<SharedString>,
 }
 
 impl PartialEq for Paragraph {
@@ -1376,6 +1377,7 @@ impl Paragraph {
             && let Some(cached) = cache.as_ref()
             && (Arc::ptr_eq(&cached.style, &node_cx.style) || *cached.style == *node_cx.style)
             && cached.mono_font == mono_font
+            && cached.issue_link_base == node_cx.issue_link_base
         {
             return (
                 cached.text.clone(),
@@ -1392,7 +1394,7 @@ impl Paragraph {
             let text_len = inline_node.text.len();
             text.push_str(&inline_node.text);
             let mut node_highlights = vec![];
-            for (range, style) in &inline_node.marks {
+            for (range, style) in node_cx.render_marks(inline_node).iter() {
                 let inner_range = (offset + range.start)..(offset + range.end);
                 let mut highlight =
                     mark_highlight(style, marked_text(&inline_node.text, range), node_cx, cx);
@@ -1417,6 +1419,7 @@ impl Paragraph {
                 text: text.clone(),
                 highlights: highlights.clone(),
                 links: links.clone(),
+                issue_link_base: node_cx.issue_link_base.clone(),
             }));
         }
         (text, highlights, links)
@@ -2336,9 +2339,48 @@ pub(crate) struct NodeContext {
     pub(crate) range_highlights: Option<Arc<RangeHighlightFrame>>,
     /// The line being scrolled into view, when there is one.
     pub(crate) reveal: Option<RevealRequest>,
+    /// Where a `#123` reference in prose links to, its number appended
+    /// ([`TextView::issue_links`](super::TextView::issue_links)).
+    pub(crate) issue_link_base: Option<SharedString>,
 }
 
 impl NodeContext {
+    /// The marks a text run renders with: its own, plus a link for each `#123`
+    /// reference outside code and outside a link it already is.
+    fn render_marks<'a>(&self, node: &'a InlineNode) -> Cow<'a, [(Range<usize>, TextMark)]> {
+        let Some(base) = &self.issue_link_base else {
+            return Cow::Borrowed(&node.marks);
+        };
+        if node.custom.is_some() || !node.text.contains('#') {
+            return Cow::Borrowed(&node.marks);
+        }
+        let references = super::inline_code::issue_references(&node.text);
+        if references.is_empty() {
+            return Cow::Borrowed(&node.marks);
+        }
+        let mut marks = node.marks.clone();
+        for (range, number) in references {
+            let claimed = node.marks.iter().any(|(marked, mark)| {
+                (mark.code || mark.link.is_some())
+                    && marked.start < range.end
+                    && range.start < marked.end
+            });
+            if !claimed {
+                marks.push((
+                    range,
+                    TextMark {
+                        link: Some(LinkMark {
+                            url: format!("{base}{number}").into(),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                ));
+            }
+        }
+        Cow::Owned(marks)
+    }
+
     fn image_source(&self, image: &ImageNode) -> ImageSource {
         match &self.image_source {
             Some(resolve) => resolve(&image.url),
@@ -2650,7 +2692,7 @@ impl Paragraph {
                 offset = 0;
             } else {
                 let mut node_highlights = vec![];
-                for (range, style) in &inline_node.marks {
+                for (range, style) in node_cx.render_marks(inline_node).iter() {
                     let inner_range = (offset + range.start)..(offset + range.end);
                     let mut highlight =
                         mark_highlight(style, marked_text(&inline_node.text, range), node_cx, cx);
@@ -2865,7 +2907,7 @@ impl Paragraph {
                 offset = 0;
             } else {
                 let mut node_highlights = vec![];
-                for (range, style) in &inline_node.marks {
+                for (range, style) in node_cx.render_marks(inline_node).iter() {
                     let inner_range = (offset + range.start)..(offset + range.end);
                     let mut highlight =
                         mark_highlight(style, marked_text(&inline_node.text, range), node_cx, cx);

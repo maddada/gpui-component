@@ -124,6 +124,7 @@ pub struct TextViewState {
     pub(super) link_click_handler: Option<std::sync::Arc<LinkClickHandlerFn>>,
     pub(super) link_secondary_click: Option<std::sync::Arc<super::text_view::LinkSecondaryClickFn>>,
     pub(super) link_presentation: Option<std::sync::Arc<super::inline_link::LinkPresentationFn>>,
+    pub(super) issue_link_base: Option<SharedString>,
     pub(super) markdown_extensions: Arc<MarkdownExtensions>,
 
     pub(super) is_selecting: bool,
@@ -243,6 +244,7 @@ impl TextViewState {
             link_click_handler: None,
             link_secondary_click: None,
             link_presentation: None,
+            issue_link_base: None,
             image_source: None,
             markdown_extensions: Arc::default(),
             is_selecting: false,
@@ -1083,6 +1085,7 @@ impl Render for TextViewState {
             stream_fade,
             range_highlights: self.range_highlights.clone(),
             reveal,
+            issue_link_base: self.issue_link_base.clone(),
         };
 
         let content = v_flex()

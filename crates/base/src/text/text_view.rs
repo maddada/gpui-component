@@ -189,6 +189,7 @@ pub struct TextView {
     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
     link_secondary_click: Option<Arc<LinkSecondaryClickFn>>,
     link_presentation: Option<Arc<super::inline_link::LinkPresentationFn>>,
+    issue_link_base: Option<SharedString>,
     image_source: Option<Arc<ImageSourceFn>>,
     reveal_handler: Option<Rc<RevealHandlerFn>>,
     markdown_extensions: Arc<MarkdownExtensions>,
@@ -242,6 +243,7 @@ impl TextView {
             link_click_handler: None,
             link_secondary_click: None,
             link_presentation: None,
+            issue_link_base: None,
             image_source: None,
             reveal_handler: None,
             markdown_extensions: Arc::default(),
@@ -272,6 +274,7 @@ impl TextView {
             link_click_handler: None,
             link_secondary_click: None,
             link_presentation: None,
+            issue_link_base: None,
             image_source: None,
             reveal_handler: None,
             markdown_extensions: Arc::default(),
@@ -302,6 +305,7 @@ impl TextView {
             link_click_handler: None,
             link_secondary_click: None,
             link_presentation: None,
+            issue_link_base: None,
             image_source: None,
             reveal_handler: None,
             markdown_extensions: Arc::default(),
@@ -506,6 +510,15 @@ impl TextView {
         F: Fn(&str, &str) -> Option<super::InlineLink> + Send + Sync + 'static,
     {
         self.link_presentation = Some(Arc::new(resolve));
+        self
+    }
+
+    /// Link every `#123` issue or pull request reference in prose (not in code,
+    /// not already a link, not a six- or eight-digit hex colour) to `base`
+    /// followed by its number, such as `https://github.com/owner/repo/issues/`.
+    /// Clicks go to [`Self::on_link_click`] like any other link.
+    pub fn issue_links(mut self, base: impl Into<SharedString>) -> Self {
+        self.issue_link_base = Some(base.into());
         self
     }
 
@@ -805,6 +818,7 @@ impl Element for TextView {
             state.link_click_handler = self.link_click_handler.clone();
             state.link_secondary_click = self.link_secondary_click.clone();
             state.link_presentation = self.link_presentation.clone();
+            state.issue_link_base = self.issue_link_base.clone();
             state.image_source = self.image_source.clone();
             state.set_markdown_extensions(self.markdown_extensions.clone(), cx);
             if let Some(motion) = &self.motion {

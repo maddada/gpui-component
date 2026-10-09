@@ -86,6 +86,49 @@ pub(super) fn hex_colors(text: &str) -> Vec<Range<usize>> {
     result
 }
 
+/// Every `#123` issue or pull request reference in a run of text, with the
+/// number it names, by the whole-token rule [`hex_colors`] uses: a `#` that
+/// does not follow a word character, `/`, `#` or `&`, then decimal digits with
+/// no word character, `/` or `-` after them. Six and eight digits are a hex
+/// colour (its swatch) and a leading zero names no issue, so neither links.
+/// `owner/repo#12` is left alone: its `#` follows a word character.
+pub(crate) fn issue_references(text: &str) -> Vec<(Range<usize>, &str)> {
+    let bytes = text.as_bytes();
+    let word = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    let mut result = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'#' {
+            index += 1;
+            continue;
+        }
+        let opens = index == 0 || {
+            let previous = bytes[index - 1];
+            !(word(previous) || matches!(previous, b'/' | b'#' | b'&'))
+        };
+        let mut end = index + 1;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            end += 1;
+        }
+        let closes = end >= bytes.len() || {
+            let next = bytes[end];
+            !(word(next) || next == b'/' || next == b'-')
+        };
+        let digits = end - index - 1;
+        if opens
+            && closes
+            && (1..=9).contains(&digits)
+            && digits != 6
+            && digits != 8
+            && bytes[index + 1] != b'0'
+        {
+            result.push((index..end, &text[index + 1..end]));
+        }
+        index = end.max(index + 1);
+    }
+    result
+}
+
 /// The text style a chip's text is shaped with: the chip's typeface at its
 /// scale, unless it is prose that only names a colour.
 pub(super) fn chip_text_style(

@@ -192,6 +192,12 @@ impl TextView {
         self.inner = self.inner.link_presentation(resolve);
         self
     }
+    /// Links every `#123` issue or pull request reference in prose to `base`
+    /// followed by its number. Clicks go to [`Self::on_link_click`].
+    pub fn issue_links(mut self, base: impl Into<SharedString>) -> Self {
+        self.inner = self.inner.issue_links(base);
+        self
+    }
     /// Answers a secondary (right) press on a link, a linked image or a linked
     /// inline object, for example with a context menu. The handler runs on
     /// the press, with the press position at `window.mouse_position()`; the
