@@ -86,7 +86,7 @@ impl WindowState {
         }
     }
 
-    fn entity(window: &Window, cx: &App) -> Option<Entity<Self>> {
+    pub(crate) fn entity(window: &Window, cx: &App) -> Option<Entity<Self>> {
         window.root::<gpui_base::Root>()??.read(cx).plugin::<Self>()
     }
 

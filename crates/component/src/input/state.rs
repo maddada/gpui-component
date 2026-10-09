@@ -398,6 +398,10 @@ impl From<Entity<OtpState>> for AnyInputState {
 
 /// Registers `state` as the window's focused input while it holds focus, and
 /// unregisters it once focus moves elsewhere.
+///
+/// Inputs call this from render, so it reads first and updates the root only on
+/// a change: an unconditional notify made every draw schedule the next one, and
+/// an update alone marks the root written, which spoils retained views that read it.
 pub(super) fn sync_focused_input_registry(
     state: impl Into<AnyInputState>,
     window: &mut Window,
@@ -405,12 +409,14 @@ pub(super) fn sync_focused_input_registry(
 ) {
     let state = state.into();
     let focused = state.focus_handle(cx).is_focused(window);
-    WindowState::try_update(window, cx, |root, _, cx| {
-        if focused {
-            root.focused_input = Some(state.clone());
-        } else if root.focused_input.as_ref() == Some(&state) {
-            root.focused_input = None;
-        }
+    let Some(root) = WindowState::entity(window, cx) else {
+        return;
+    };
+    if focused == (root.read(cx).focused_input.as_ref() == Some(&state)) {
+        return;
+    }
+    root.update(cx, |root, cx| {
+        root.focused_input = focused.then(|| state.clone());
         cx.notify();
     });
 }
