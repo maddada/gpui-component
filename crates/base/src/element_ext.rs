@@ -22,6 +22,8 @@ pub trait ElementExt: ParentElement + Sized {
                 move |bounds, window, cx| callback(bounds, window, cx),
                 |_, _, _, _| {},
             )
+            // Without an inset, an absolute child starts after the padding but
+            // is still sized to the padding box, overhanging the far edges.
             .absolute()
             // Pinned to the corner: without insets an absolute child keeps its static
             // position, which in a block parent is below the parent's text, so the

@@ -3838,6 +3838,7 @@ impl BlockNode {
             .flex_shrink_0()
             .when(invisible, |this| this.invisible())
             .refine_style(style.list_marker())
+            .refine_style(style.list_style())
             .child(if rtl {
                 // A right-to-left mark makes the marker's own paragraph read right to
                 // left, which puts its trailing space on the left, beside the text.
@@ -3933,7 +3934,13 @@ impl BlockNode {
                                 .items_center()
                                 .justify_center()
                                 .border_1()
-                                .border_color(style.foreground())
+                                .border_color(
+                                    style
+                                        .list_style()
+                                        .text
+                                        .color
+                                        .unwrap_or(style.foreground()),
+                                )
                                 .when(checked, |this| {
                                     this.bg(style.foreground()).child(
                                         img(Arc::new(Image::from_bytes(
@@ -4583,11 +4590,16 @@ impl BlockNode {
                     .border_l_3()
                     .border_color(node_cx.style.border())
                     .px_4()
+                    .refine_style(node_cx.style.blockquote_style())
+                    // Nested tables measure while rendering, before this div applies its text style.
                     .children({
                         let children_len = children.len();
                         children.into_iter().enumerate().map(move |(index, c)| {
                             let is_last = index == children_len - 1;
-                            c.render_block(options.is_last(is_last), node_cx, window, cx)
+                            window.with_text_style(
+                                Some(node_cx.style.blockquote_style().text.clone()),
+                                |window| c.render_block(options.is_last(is_last), node_cx, window, cx),
+                            )
                         })
                     })
                     .into_any_element(),

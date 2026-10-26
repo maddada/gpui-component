@@ -57,7 +57,13 @@ impl AssetSource for AppAssets {
 
 actions!(speech, [ToggleSpeech]);
 
-const TOGGLE_KEYS: &str = "secondary-shift-d";
+fn toggle_keys(cx: &App) -> &'static str {
+    if cx.platform_info().is_mac() {
+        "cmd-shift-d"
+    } else {
+        "ctrl-shift-d"
+    }
+}
 /// Most log entries kept; older ones scroll away.
 const LOG_LIMIT: usize = 200;
 

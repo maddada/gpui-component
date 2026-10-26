@@ -40,7 +40,6 @@ members = [
     "examples/ai_recipes",
     "examples/speech",
     "crates/shell",
-    "crates/shell/rquickjs-compat",
 ]
 resolver = "2"
 
@@ -49,14 +48,14 @@ publish = false
 edition = "2024"
 
 [workspace.dependencies]
-gpui-kit = { path = "crates/kit", version = "0.8.0" }
-gpui-component = { path = "crates/component", version = "0.8.0" }
-gpui-base = { path = "crates/base", version = "0.8.0" }
-gpui-component-macros = { path = "crates/component-macros", version = "0.8.0" }
-gpui-kit-assets = { path = "crates/assets", version = "0.8.0" }
-gpui-fps = { path = "crates/fps", version = "0.8.0" }
-gpui-shell = { path = "crates/shell", version = "0.8.0" }
-gpui-webview = { path = "crates/webview", version = "0.8.0" }
+gpui-kit = { path = "crates/kit", version = "0.8.1" }
+gpui-component = { path = "crates/component", version = "0.8.1" }
+gpui-base = { path = "crates/base", version = "0.8.1" }
+gpui-component-macros = { path = "crates/component-macros", version = "0.8.1" }
+gpui-kit-assets = { path = "crates/assets", version = "0.8.1" }
+gpui-fps = { path = "crates/fps", version = "0.8.1" }
+gpui-shell = { path = "crates/shell", version = "0.8.1" }
+gpui-webview = { path = "crates/webview", version = "0.8.1" }
 story = { path = "crates/story" }
 
 # Ghostex fork: GPUI comes from Zed's git repository instead of the `gpui-pre-*`
@@ -184,12 +183,6 @@ cap-std = { opt-level = 3 }
 # a release binary (`gpui-shell`: 106 MB to 78 MB on Linux x86_64).
 [profile.release]
 strip = "symbols"
-
-[patch.crates-io]
-# LLRT's public modules still name their compatible binding dependency
-# `rquickjs`. Route those dependencies through a source-compatible facade so
-# the shell and LLRT share the exact same quickjs-jit types and VM.
-rquickjs = { path = "crates/shell/rquickjs-compat" }
 
 [workspace.metadata.typos]
 files.extend-exclude = ["**/fixtures/*"]

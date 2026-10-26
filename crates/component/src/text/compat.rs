@@ -86,6 +86,18 @@ impl TextView {
             stream_fade: None,
         }
     }
+    /// Overrides the source of every document image, including embedded data URLs.
+    ///
+    /// Used for both rendering and intrinsic-size measurement. The returned source
+    /// is authoritative: pending or failed loads never fall back to the document URL.
+    /// Without this override, images use Base's default URI and data URL handling.
+    pub fn image_source<F>(mut self, resolver: F) -> Self
+    where
+        F: Fn(&gpui::SharedUri) -> gpui::ImageSource + Send + Sync + 'static,
+    {
+        self.inner = self.inner.image_source(resolver);
+        self
+    }
     /// Sets whether links are underlined at rest. Defaults to `true`.
     pub fn link_underline(mut self, underline: bool) -> Self {
         self.inner = self.inner.link_underline(underline);
@@ -111,6 +123,19 @@ impl TextView {
     /// ignored. Unspecified properties are inherited.
     pub fn inline_code_style(mut self, style: StyleRefinement) -> Self {
         self.inner = self.inner.inline_code_style(style);
+        self
+    }
+    /// Refines bullet and number list markers over the resolved theme or
+    /// explicit style. The text color also outlines unchecked task-list
+    /// checkboxes. Unspecified properties are inherited.
+    pub fn list_style(mut self, style: StyleRefinement) -> Self {
+        self.inner = self.inner.list_style(style);
+        self
+    }
+    /// Refines the blockquote container, including its left border, over the
+    /// resolved theme or explicit style. Unspecified properties are inherited.
+    pub fn blockquote_style(mut self, style: StyleRefinement) -> Self {
+        self.inner = self.inner.blockquote_style(style);
         self
     }
     /// Sets whether a copied selection carries Markdown source or plain text.

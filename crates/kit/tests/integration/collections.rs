@@ -738,7 +738,7 @@ fn table_reports_one_scrollable_column_with_and_without_fixed_columns(cx: &mut T
 #[gpui_kit::test]
 fn table_modifier_clicks_select_rows_unless_turned_off(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
-    let secondary = Modifiers::secondary_key();
+    let secondary = cx.update(|cx| Modifiers::secondary_key(cx));
     let shift = Modifiers::shift();
     // The row header, shown in cell selection, is the narrow column before
     // the cells.
@@ -807,7 +807,7 @@ fn table_modifier_clicks_on_the_selected_cell_escalate_unless_turned_off(cx: &mu
             assert_eq!(table.read(cx).selection(), TableSelection::Cell(1, 0));
             window.click_with_options(
                 ("row", 1usize),
-                first_cell.with_modifiers(Modifiers::secondary_key()),
+                first_cell.with_modifiers(Modifiers::secondary_key(cx)),
                 cx,
             );
             assert_eq!(table.read(cx).selection(), expected);
@@ -866,7 +866,7 @@ fn list_click_confirms_as_secondary_with_the_secondary_modifier(cx: &mut TestApp
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click(("choice", 0usize), cx);
-        window.click_with_modifiers(("choice", 1usize), Modifiers::secondary_key(), cx);
+        window.click_with_modifiers(("choice", 1usize), Modifiers::secondary_key(cx), cx);
         let list = picker.read(cx).list.clone();
         assert_eq!(list.read(cx).delegate().confirmed, [false, true]);
     })

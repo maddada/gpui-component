@@ -67,6 +67,7 @@ mod commands {
 use commands::*;
 
 pub(super) fn init(cx: &mut App) {
+    let is_mac = cx.platform_info().is_mac();
     cx.bind_keys([
         KeyBinding::new("down", OlderCommit, Some("TigHistory")),
         KeyBinding::new("j", OlderCommit, Some("TigHistory")),

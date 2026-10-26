@@ -78,6 +78,10 @@ pub struct TextViewStyle {
     /// that name for its inline code chip ([`InlineCodeStyle`]), so upstream's
     /// refinement is `inline_code_refinement`.
     inline_code_refinement: StyleRefinement,
+    /// Explicit list marker refinements, applied after theme and surface colors.
+    list_style: StyleRefinement,
+    /// Explicit blockquote refinements, applied after theme and surface colors.
+    blockquote_style: StyleRefinement,
     /// The table body background, or the theme surface when `None`. Only
     /// [`Self::on_text_color`] sets it, to let a table on an inverted surface
     /// show that surface.
@@ -116,6 +120,8 @@ impl PartialEq for TextViewStyle {
             && self.prose_swatch == other.prose_swatch
             && self.default_cursor == other.default_cursor
             && self.strong_weight == other.strong_weight
+            && self.list_style == other.list_style
+            && self.blockquote_style == other.blockquote_style
             && self.table_background == other.table_background
             && self.is_dark == other.is_dark
     }
@@ -174,6 +180,8 @@ impl TextViewStyle {
             default_cursor: false,
             strong_weight: FontWeight::BOLD,
             inline_code_refinement: StyleRefinement::default(),
+            list_style: StyleRefinement::default(),
+            blockquote_style: StyleRefinement::default(),
             table_background: None,
             is_dark,
         }
@@ -295,6 +303,34 @@ impl TextViewStyle {
     /// inverted surfaces.
     pub fn with_inline_code_refinement(mut self, style: StyleRefinement) -> Self {
         self.inline_code_refinement = normalize_inline_code_style(style);
+        self
+    }
+
+    /// Refines the marker of a bullet or numbered list item.
+    ///
+    /// Applied to the marker column after its defaults: the muted text color,
+    /// a minimum width of the list indent, right-aligned text, and a right
+    /// padding of 0.3 times that indent. Text properties such as color, font
+    /// family, size, and weight style the bullet or number. The text color
+    /// also outlines an unchecked task-list checkbox; a checked one keeps the
+    /// link color. Unspecified properties keep the existing defaults, and
+    /// explicit refinements also take precedence on inverted surfaces.
+    pub fn with_list_style(mut self, style: StyleRefinement) -> Self {
+        self.list_style = style;
+        self
+    }
+
+    /// Refines the blockquote container.
+    ///
+    /// Applied after its defaults: the muted text color, a 2px left border in
+    /// the border color, and a left padding of 0.9 times the body font size.
+    /// Border widths and color style the quote bar; text properties,
+    /// background, padding, and corner radii style the quote and its
+    /// contents. Child blocks keep properties they set explicitly, including
+    /// heading and table font sizes. Unspecified properties keep the existing
+    /// defaults, and explicit refinements also take precedence on inverted surfaces.
+    pub fn with_blockquote_style(mut self, style: StyleRefinement) -> Self {
+        self.blockquote_style = style;
         self
     }
 
@@ -565,6 +601,16 @@ impl TextViewStyle {
         &self.inline_code_refinement
     }
 
+    /// Explicit list marker refinements.
+    pub fn list_style(&self) -> &StyleRefinement {
+        &self.list_style
+    }
+
+    /// Explicit blockquote refinements.
+    pub fn blockquote_style(&self) -> &StyleRefinement {
+        &self.blockquote_style
+    }
+
     /// Whether content-specific assets should use their dark variant.
     pub fn is_dark(&self) -> bool {
         self.is_dark
@@ -696,6 +742,16 @@ mod tests {
                 .clone()
                 .with_inline_code_refinement(StyleRefinement::default().border_color(gpui::red()))
         );
+        assert!(
+            base != base
+                .clone()
+                .with_list_style(StyleRefinement::default().text_color(gpui::red()))
+        );
+        assert!(
+            base != base
+                .clone()
+                .with_blockquote_style(StyleRefinement::default().border_color(gpui::red()))
+        );
     }
 
     #[test]
@@ -806,6 +862,31 @@ mod tests {
                 .inline_code_refinement(),
             &refinement
         );
+    }
+
+    #[test]
+    fn list_and_blockquote_refinements_remain_explicit_on_an_inverted_surface() {
+        let colors = ColorTokens::light();
+        let plain = TextViewStyle::from_colors(&colors, false);
+        assert_eq!(plain.list_style(), &StyleRefinement::default());
+        assert_eq!(plain.blockquote_style(), &StyleRefinement::default());
+
+        let marker = StyleRefinement::default()
+            .text_color(gpui::red())
+            .font_weight(gpui::FontWeight::BOLD);
+        let quote = StyleRefinement::default()
+            .border_l_4()
+            .border_color(gpui::blue())
+            .bg(gpui::green());
+        let style = plain
+            .with_list_style(marker.clone())
+            .with_blockquote_style(quote.clone());
+        assert_eq!(style.list_style(), &marker);
+        assert_eq!(style.blockquote_style(), &quote);
+
+        let inverted = style.on_text_color(colors.primary_foreground);
+        assert_eq!(inverted.list_style(), &marker);
+        assert_eq!(inverted.blockquote_style(), &quote);
     }
 
     #[test]

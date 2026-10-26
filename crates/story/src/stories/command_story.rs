@@ -241,7 +241,7 @@ fn with_entries(command: Command, entries: impl IntoIterator<Item = CommandEntry
         })
 }
 
-fn key_hint(keys: &[&str], label: &'static str) -> AnyElement {
+fn key_hint(keys: &[&'static str], label: &'static str) -> AnyElement {
     h_flex()
         .gap_1()
         .items_center()
@@ -273,11 +273,7 @@ const STOCKS: [Stock; 10] = [
 
 impl CommandStory {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let primary = if cfg!(target_os = "macos") {
-            "cmd"
-        } else {
-            "ctrl"
-        };
+        let is_mac = cx.platform_info().is_mac();
         cx.bind_keys([
             gpui_kit::base::bind_secondary(&format!("{primary}-p"), OpenProfile, Some(COMMAND_CONTEXT), cx),
             gpui_kit::base::bind_secondary(&format!("{primary}-b"), OpenBilling, Some(COMMAND_CONTEXT), cx),
