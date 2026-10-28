@@ -33,6 +33,9 @@ pub struct InlineLink {
     pub icon_size: Pixels,
     pub gap: Pixels,
     pub color: Hsla,
+    /// Ghostex fork: the icon's own tint, when it differs from the label's
+    /// (an agent's logo in its brand colour beside a neutral label).
+    pub icon_color: Option<Hsla>,
     /// Ellipsize from the start when the chip is wider than the line, so a
     /// path keeps its file name visible.
     pub truncate_start: bool,
@@ -319,7 +322,7 @@ pub(super) fn element(
                 svg()
                     .path(reference.icon.clone())
                     .size(reference.icon_size)
-                    .text_color(reference.color)
+                    .text_color(reference.icon_color.unwrap_or(reference.color))
                     .flex_shrink_0(),
             )
         })
