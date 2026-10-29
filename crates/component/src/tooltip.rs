@@ -100,13 +100,28 @@ pub struct Tooltip {
 
 impl Tooltip {
     /// Create a Tooltip with a text content.
+    ///
+    /// Ghostex: a shortcut written after the label in brackets ("Talk to the voice agent (⌃⌥V)",
+    /// "Back (Ctrl+[)") moves out of the text into the title row's key caps, as if the caller had
+    /// passed it to [`Tooltip::keys`] (see [`split_trailing_shortcut`]).
     pub fn new(text: impl Into<Text>) -> Self {
+        let mut keys = None;
+        let content = match text.into() {
+            Text::String(text) => match split_trailing_shortcut(&text) {
+                Some((label, chord)) => {
+                    keys = Some(SharedString::from(chord.to_owned()));
+                    Text::String(label.to_owned().into())
+                }
+                None => Text::String(text),
+            },
+            other => other,
+        };
         Self {
             style: StyleRefinement::default(),
-            content: TooltipContext::Text(text.into()),
+            content: TooltipContext::Text(content),
             key_binding: None,
             action: None,
-            keys: None,
+            keys,
             rows: Vec::new(),
         }
     }
@@ -353,6 +368,44 @@ fn chord_keys(chord: &str) -> Vec<SharedString> {
         }
     }
     keys
+}
+
+/// Ghostex: splits "Label (⌃⌥V)" into the label and the shortcut in its trailing brackets, when
+/// every stroke in the brackets is a chord: one that holds a modifier symbol (⌘ ⌃ ⌥ ⇧) or starts
+/// with a modifier name and a plus ("Ctrl+Alt+V", "Shift+Enter"). "Runs in agentbox (main)" or
+/// "Send (⌃Enter interrupts)" keep their brackets.
+///
+/// CDXC:Tooltips 2026-10-29 DECISION:
+/// User, of the header's voice button tooltip "Talk to the voice agent (^⌥V)": "this tooltip is very bad man", and of the context ring's "Hide session details": "this one is much better ... please apply 2nd one everywhere that makes sense instead of the one we have in Image #1". Every plain-text tooltip is this mini menu bubble at its natural size, and a shortcut the app glued to the label in brackets reads as muted key caps after the label instead, so the dozens of call sites that format "{label} ({shortcut})" all take the new look from here.
+pub fn split_trailing_shortcut(text: &str) -> Option<(&str, &str)> {
+    let trimmed = text.trim_end();
+    let inner_end = trimmed.strip_suffix(')')?;
+    let open = inner_end.rfind(" (")?;
+    let label = inner_end[..open].trim_end();
+    let chord = inner_end[open + 2..].trim();
+    if label.is_empty() || chord.is_empty() || label.contains('\n') {
+        return None;
+    }
+    chord
+        .split_whitespace()
+        .all(is_chord_stroke)
+        .then_some((label, chord))
+}
+
+fn is_chord_stroke(stroke: &str) -> bool {
+    const SYMBOLS: [char; 4] = ['⌘', '⌃', '⌥', '⇧'];
+    const NAMES: [&str; 9] = [
+        "ctrl", "control", "alt", "option", "opt", "shift", "cmd", "super", "win",
+    ];
+    if stroke.contains(SYMBOLS) {
+        return true;
+    }
+    match stroke.split_once('+') {
+        Some((modifier, key)) => {
+            !key.is_empty() && NAMES.contains(&modifier.to_ascii_lowercase().as_str())
+        }
+        None => false,
+    }
 }
 
 /// Ghostex: a chord drawn as small key caps, right-aligned in a mini menu row.
