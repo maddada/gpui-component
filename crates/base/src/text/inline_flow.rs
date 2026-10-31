@@ -178,6 +178,9 @@ impl InlineFlowFrameState {
 
 /// Everything but the wrap width that a flow's layout depends on.
 struct FlowLayoutKey {
+    /// `TextSystem::font_generation`: a family's name can draw in another font after a font is
+    /// added or substituted, with every other input reading the same.
+    font_generation: usize,
     items: Vec<MeasureItem>,
     image_sizes: Vec<Option<Size<Pixels>>>,
     typography: InlineFlowTypography,
@@ -185,7 +188,8 @@ struct FlowLayoutKey {
 
 impl FlowLayoutKey {
     fn matches(&self, other: &Self) -> bool {
-        self.items.len() == other.items.len()
+        self.font_generation == other.font_generation
+            && self.items.len() == other.items.len()
             && self
                 .items
                 .iter()
@@ -509,6 +513,7 @@ impl Element for InlineFlow {
             .collect::<Vec<_>>();
         let objects = prepare_objects(&measure_items, &typography.text_style, window, cx);
         frame_state.borrow_mut().set_key(FlowLayoutKey {
+            font_generation: cx.text_system().font_generation(),
             items: measure_items,
             image_sizes,
             typography: typography.clone(),

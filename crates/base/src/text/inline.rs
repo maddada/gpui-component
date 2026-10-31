@@ -412,6 +412,9 @@ struct RetainedLayout {
     text: SharedString,
     runs: Vec<TextRun>,
     text_style: TextStyle,
+    /// `TextSystem::font_generation` when it was shaped: a family's name can draw in another font
+    /// after a font is added or substituted, with every other input reading the same.
+    font_generation: usize,
 }
 
 thread_local! {
@@ -689,6 +692,7 @@ impl Inline {
                 text: self.text.clone(),
                 runs,
                 text_style,
+                font_generation: cx.text_system().font_generation(),
             },
             cx.try_global::<RetainedLayoutCleanup>()
                 .map(|cleanup| &cleanup.sender),
@@ -1224,10 +1228,14 @@ impl Element for Inline {
         let runs = text_runs(self.text.len(), &text_style, &self.highlights);
 
         // Reuse the previous frame's shaped text when it was shaped from the
-        // same text, runs and style; `StyledText` consumes its runs on every
-        // layout, so they are handed over again either way.
+        // same text, runs, style and fonts; `StyledText` consumes its runs on
+        // every layout, so they are handed over again either way.
+        let font_generation = cx.text_system().font_generation();
         let retained = take_retained_layout(&self.state).filter(|retained| {
-            retained.text == self.text && retained.runs == runs && retained.text_style == text_style
+            retained.text == self.text
+                && retained.runs == runs
+                && retained.text_style == text_style
+                && retained.font_generation == font_generation
         });
         self.styled_text = match retained {
             Some(retained) => retained.styled_text.with_runs(runs.clone()),
@@ -2890,6 +2898,7 @@ mod retained_layout_tests {
                 text: text.into(),
                 runs: Vec::new(),
                 text_style: gpui::TextStyle::default(),
+                font_generation: 0,
             },
             cleanup,
         );
