@@ -436,7 +436,12 @@ impl Language {
             #[cfg(feature = "tree-sitter-javascript")]
             Self::JavaScript => (
                 tree_sitter_javascript::LANGUAGE,
-                include_str!("languages/javascript/highlights.scm"),
+                // The JavaScript grammar also parses JSX, so a `.jsx` file needs the JSX query on top (tags, attributes, brackets).
+                concat!(
+                    include_str!("languages/javascript/highlights.scm"),
+                    "\n",
+                    include_str!("languages/javascript/jsx-highlights.scm"),
+                ),
                 include_str!("languages/javascript/injections.scm"),
                 tree_sitter_javascript::LOCALS_QUERY,
             ),
@@ -537,8 +542,13 @@ impl Language {
             #[cfg(feature = "tree-sitter-tsx")]
             Self::Tsx => (
                 tree_sitter_typescript::LANGUAGE_TSX,
-                tree_sitter_typescript::HIGHLIGHTS_QUERY,
-                "",
+                // TSX is TypeScript plus JSX: the TypeScript query (the crate's bare one only colours types, capitalised names and a few keywords) and the injections TypeScript uses, plus the JSX query.
+                concat!(
+                    include_str!("languages/typescript/highlights.scm"),
+                    "\n",
+                    include_str!("languages/javascript/jsx-highlights.scm"),
+                ),
+                include_str!("languages/javascript/injections.scm"),
                 tree_sitter_typescript::LOCALS_QUERY,
             ),
             #[cfg(feature = "tree-sitter-diff")]
