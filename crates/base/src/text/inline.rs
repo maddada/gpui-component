@@ -1443,8 +1443,13 @@ impl Element for Inline {
         let default_cursor = text_view_state
             .as_ref()
             .is_some_and(|state| state.read(cx).text_view_style.default_cursor());
+        // `TextViewStyle::with_arrow_over_text`: the arrow over the text, the hand
+        // over its links.
+        let arrow_over_text = text_view_state
+            .as_ref()
+            .is_some_and(|state| state.read(cx).text_view_style.arrow_over_text());
         if !default_cursor {
-            if is_selection || is_selectable {
+            if (is_selection || is_selectable) && !arrow_over_text {
                 window.set_cursor_style(CursorStyle::IBeam, &hitbox);
             }
 

@@ -70,6 +70,8 @@ pub struct TextViewStyle {
     inline_code_style: Option<InlineCodeStyle>,
     prose_swatch: Option<InlineCodeStyle>,
     default_cursor: bool,
+    // Ghostex fork: the arrow over text instead of the I-beam (links keep the hand).
+    arrow_over_text: bool,
     // Ghostex fork: the weight `**strong**` text is drawn at (Settings draws it at 500).
     strong_weight: FontWeight,
     /// Explicit inline code refinements, applied after theme and surface colors.
@@ -122,6 +124,7 @@ impl PartialEq for TextViewStyle {
             && self.inline_code_refinement == other.inline_code_refinement
             && self.prose_swatch == other.prose_swatch
             && self.default_cursor == other.default_cursor
+            && self.arrow_over_text == other.arrow_over_text
             && self.strong_weight == other.strong_weight
             && self.list_style == other.list_style
             && self.blockquote_style == other.blockquote_style
@@ -182,6 +185,7 @@ impl TextViewStyle {
             inline_code_style: None,
             prose_swatch: None,
             default_cursor: false,
+            arrow_over_text: false,
             strong_weight: FontWeight::BOLD,
             inline_code_refinement: StyleRefinement::default(),
             list_style: StyleRefinement::default(),
@@ -375,6 +379,14 @@ impl TextViewStyle {
     /// usual text and link cursors.
     pub fn with_default_cursor(mut self, default_cursor: bool) -> Self {
         self.default_cursor = default_cursor;
+        self
+    }
+
+    /// Ghostex fork: keeps the arrow over selectable text instead of the I-beam,
+    /// while a link, a decorated reference or a linked image still shows the
+    /// pointing hand. Selection works as before. Default `false`.
+    pub fn with_arrow_over_text(mut self, arrow_over_text: bool) -> Self {
+        self.arrow_over_text = arrow_over_text;
         self
     }
 
@@ -601,6 +613,12 @@ impl TextViewStyle {
     /// [`Self::with_default_cursor`].
     pub fn default_cursor(&self) -> bool {
         self.default_cursor
+    }
+
+    /// Ghostex fork: whether selectable text keeps the arrow; see
+    /// [`Self::with_arrow_over_text`].
+    pub fn arrow_over_text(&self) -> bool {
+        self.arrow_over_text
     }
 
     /// Ghostex fork: the weight `**strong**` text is drawn at; see

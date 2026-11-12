@@ -106,6 +106,10 @@ pub struct TextViewStyle {
     /// unaffected; only the cursor shape is. Default `false`, which keeps the
     /// usual text and link cursors.
     pub default_cursor: bool,
+    /// Ghostex fork: the arrow over selectable text instead of the I-beam; a
+    /// link, a decorated reference or a linked image keeps the pointing hand.
+    /// Selection works as before. Default `false`.
+    pub arrow_over_text: bool,
     /// Ghostex fork: the weight `**strong**` text is drawn at. Default
     /// [`FontWeight::BOLD`].
     pub strong_weight: FontWeight,
@@ -143,6 +147,7 @@ impl Default for TextViewStyle {
             inline_code_style: None,
             prose_swatch: None,
             default_cursor: false,
+            arrow_over_text: false,
             strong_weight: FontWeight::BOLD,
             link: None,
             link_underline: true,
@@ -182,6 +187,7 @@ impl PartialEq for TextViewStyle {
             && self.inline_code_style == other.inline_code_style
             && self.prose_swatch == other.prose_swatch
             && self.default_cursor == other.default_cursor
+            && self.arrow_over_text == other.arrow_over_text
             && self.strong_weight == other.strong_weight
             && self.link == other.link
             && self.link_underline == other.link_underline
@@ -246,6 +252,14 @@ impl TextViewStyle {
     /// Selection and clicks keep working; only the cursor shape changes.
     pub fn default_cursor(mut self, default_cursor: bool) -> Self {
         self.default_cursor = default_cursor;
+        self
+    }
+
+    /// Ghostex fork: keep the arrow over selectable text instead of the I-beam,
+    /// while links, decorated references and linked images keep the pointing
+    /// hand. Selection keeps working.
+    pub fn with_arrow_over_text(mut self, arrow_over_text: bool) -> Self {
+        self.arrow_over_text = arrow_over_text;
         self
     }
 
