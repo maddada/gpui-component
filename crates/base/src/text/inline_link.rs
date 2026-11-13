@@ -50,8 +50,9 @@ pub struct InlineLink {
     pub font_family: Option<SharedString>,
     /// Ghostex fork: the label's size relative to the line's.
     pub font_scale: Option<f32>,
-    /// Ghostex fork: buttons shown in a small bar above the chip while the
-    /// pointer is on the chip or the bar; the bar never covers the label.
+    /// Ghostex fork: buttons shown in a small bar at the chip's bottom right
+    /// corner, below it, while the pointer is on the chip or the bar; the bar
+    /// never covers the label.
     pub hover_actions: Vec<InlineLinkAction>,
     /// Ghostex fork: how that bar looks.
     pub hover_bar: Option<InlineLinkBar>,
@@ -77,7 +78,7 @@ pub struct InlineLinkBar {
     pub radius: Pixels,
     pub padding: Pixels,
     pub gap: Pixels,
-    /// The room between the bar and the chip below it.
+    /// The room between the bar and the chip above it.
     pub spacing: Pixels,
     pub button_size: Pixels,
     pub button_radius: Pixels,
@@ -340,14 +341,14 @@ pub(super) fn element(
                 window.refresh();
             })
         })
-        // Above the chip (below it when `bar_below`), out of its clip: an
-        // absolute anchor at its top or bottom left, the bar drawn after
+        // Below the chip (above it when not `bar_below`), out of its clip: an
+        // absolute anchor at its bottom or top right, the bar drawn after
         // everything else from there.
         .when_some(bar, |this, bar| {
             this.relative().child(
                 div()
                     .absolute()
-                    .left_0()
+                    .right_0()
                     .map(|anchor| {
                         if bar_below {
                             anchor.bottom_0()
@@ -389,9 +390,10 @@ pub(super) fn element(
         .into_any_element()
 }
 
-/// Ghostex fork: the bar of a chip's hover buttons, anchored above the chip
-/// (below it when `below`, which the flow decides from the room its clip
-/// leaves), shown while the pointer is on the chip or the bar. Its edge
+/// Ghostex fork: the bar of a chip's hover buttons, right-aligned below the
+/// chip at its bottom right corner (above it when not `below`, which the flow
+/// decides from the room its clip leaves), shown while the pointer is on the
+/// chip or the bar. Its edge
 /// facing the chip reaches into the chip's own, so the pointer crossing from
 /// the chip into the bar never leaves both.
 #[allow(clippy::too_many_arguments)]
@@ -413,9 +415,9 @@ fn hover_bar(
     Some(
         anchored()
             .anchor(if below {
-                Anchor::TopLeft
+                Anchor::TopRight
             } else {
-                Anchor::BottomLeft
+                Anchor::BottomRight
             })
             .offset(point(Pixels::ZERO, if below { -overlap } else { overlap }))
             .child(

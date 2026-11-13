@@ -11,9 +11,8 @@ use gpui::{
     GlobalElementId, Hsla, ImageSource, InspectorElementId, InteractiveElement as _, IntoElement,
     LayoutId, LineFragment as WrapLineFragment, MouseButton, ObjectFit, Pixels, Refineable as _,
     ShapedLine, SharedString, Size, StatefulInteractiveElement as _, StyleRefinement, Styled,
-    StyledImage as _,
-    TextRun, TextStyle, WhiteSpace, Window, img, point, prelude::FluentBuilder as _, px, relative,
-    size,
+    StyledImage as _, TextRun, TextStyle, WhiteSpace, Window, img, point,
+    prelude::FluentBuilder as _, px, relative, size,
 };
 
 use crate::text::text_view::{
@@ -887,9 +886,10 @@ impl Element for InlineFlow {
                                 |_, _| super::inline_link::InlineLinkHover::default(),
                             )
                         });
-                    // Ghostex fork: the hover bar goes above the chip unless the
-                    // clip this paragraph is drawn in (the transcript's visible
-                    // area) has no room for it there and has room below.
+                    // Ghostex fork: the hover bar goes below the chip, at its
+                    // bottom right corner, unless the clip this paragraph is
+                    // drawn in (the transcript's visible area) has no room for
+                    // it there and has room above.
                     let bar_below = reference
                         .as_ref()
                         .and_then(|reference| reference.link.hover_bar.as_ref())
@@ -900,8 +900,8 @@ impl Element for InlineFlow {
                                 + px(2.);
                             let visible = window.content_mask().bounds;
                             let top = bounds.origin.y + origin.y;
-                            top - room < visible.top()
-                                && top + fragment_size.height + room <= visible.bottom()
+                            !(top + fragment_size.height + room > visible.bottom()
+                                && top - room >= visible.top())
                         });
                     let (mut element, element_origin, element_size) =
                         match (reference, links.first()) {
