@@ -10,11 +10,10 @@ pub use compat::{
 pub use frontmatter::FrontmatterPlugin;
 pub use gpui_base::text::{
     CodeBlock, InlineCodeStyle, InlineElement, InlineLink, InlineLinkAction, InlineLinkBar,
-    InlineLinkFrame, InlineRenderContext, MarkdownBlockParserFn, MarkdownBlockRenderFn,
-    MarkdownExtensions, MarkdownNode, MarkdownParseContext, MarkdownPlugin, RangeHighlight,
-    RangeHighlightError, RenderedText, SelectionFormat, TableData, TextFind, TextViewLink,
-    TextViewMotion,
-    TextViewState, markdown_ast,
+    InlineLinkFrame, InlineLinkMark, InlineRenderContext, MarkdownBlockParserFn,
+    MarkdownBlockRenderFn, MarkdownExtensions, MarkdownNode, MarkdownParseContext, MarkdownPlugin,
+    RangeHighlight, RangeHighlightError, RenderedText, SelectionFormat, TableData, TextFind,
+    TextViewLink, TextViewMotion, TextViewState, markdown_ast,
 };
 pub use style::TextViewStyle;
 
@@ -71,7 +70,8 @@ pub(crate) fn install_text_view_defaults(theme: &crate::Theme, cx: &mut gpui::Ap
     let defaults = gpui_base::TextViewDefaults::new()
         .with_style(base_text_view_style(theme))
         .with_link_tooltip(|title, window, cx| {
-            crate::tooltip::Tooltip::new(title).build(window, cx)
+            crate::tooltip::reference_card(&title, window, cx)
+                .unwrap_or_else(|| crate::tooltip::Tooltip::new(title).build(window, cx))
         });
 
     #[cfg(any(feature = "tree-sitter", feature = "syntect"))]

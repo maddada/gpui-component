@@ -2419,16 +2419,23 @@ impl<M: InputModeKind> TextElement<M> {
             .spans()
             .iter()
             .map(|replacement| {
+                let run = |len: usize| {
+                    let mut run = style.to_run(len);
+                    if let Some(weight) = replacement.font_weight {
+                        run.font.weight = weight;
+                    }
+                    run
+                };
                 let shape = |text: &SharedString, window: &mut Window| {
                     window
                         .text_system()
-                        .shape_line(text.clone(), font_size, &[style.to_run(text.len())], None)
+                        .shape_line(text.clone(), font_size, &[run(text.len())], None)
                         .width
                 };
                 let mut text = replacement.text.clone();
                 let mut text_width = shape(&text, window);
                 if text_width > width {
-                    let runs = [style.to_run(text.len())];
+                    let runs = [run(text.len())];
                     let (truncated, _) = cx
                         .text_system()
                         .line_wrapper(style.font(), font_size)
@@ -2441,6 +2448,7 @@ impl<M: InputModeKind> TextElement<M> {
                     text,
                     width: text_width.max(px(1.)),
                     color: replacement.color,
+                    font_weight: replacement.font_weight,
                 }
             })
             .collect()
@@ -2555,6 +2563,9 @@ impl<M: InputModeKind> TextElement<M> {
                                 run.strikethrough = None;
                                 if let Some(color) = replacement.color {
                                     run.color = dim(color);
+                                }
+                                if let Some(weight) = replacement.font_weight {
+                                    run.font.weight = weight;
                                 }
                                 let shaped = window.text_system().shape_line(
                                     replacement.text.clone(),
@@ -2682,6 +2693,9 @@ impl<M: InputModeKind> TextElement<M> {
                     icon: span.icon.clone(),
                     icon_size: span.icon_size,
                     icon_inset: span.icon_inset,
+                    icon_color: span.icon_color.map(dim),
+                    frame: span.frame.clone(),
+                    trailing: span.trailing.clone(),
                     color: dim(span.color.unwrap_or(style.color)),
                     pointer: span.pointer && !state.disabled,
                     tooltip: span.tooltip.clone(),
@@ -2690,6 +2704,86 @@ impl<M: InputModeKind> TextElement<M> {
             y += line.size(layout.line_height).height;
         }
         pills
+    }
+
+    /// Ghostex fork: the boxes under framed replacements, drawn before the
+    /// selection and the text so both read over them.
+    fn paint_inline_replacement_frames(pills: &[InlineReplacementPill], window: &mut Window) {
+        for pill in pills {
+            let Some(frame) = &pill.frame else {
+                continue;
+            };
+            let hovered = pill.pointer_over(window);
+            let background = if hovered {
+                frame.hover_background.or(frame.background)
+            } else {
+                frame.background
+            };
+            let bounds = Bounds::new(
+                point(pill.bounds.origin.x, pill.bounds.origin.y + frame.inset_y),
+                size(
+                    pill.bounds.size.width,
+                    (pill.bounds.size.height - frame.inset_y * 2.).max(px(1.)),
+                ),
+            );
+            window.paint_quad(gpui::quad(
+                bounds,
+                frame.radius.min(bounds.size.height / 2.),
+                background.unwrap_or(gpui::transparent_black()),
+                frame.border_width,
+                frame.border_color,
+                gpui::BorderStyle::Solid,
+            ));
+        }
+    }
+
+    /// Ghostex fork: a replacement's trailing marks, from its right edge in.
+    fn paint_inline_replacement_marks(
+        pill: &InlineReplacementPill,
+        line_height: Pixels,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        use super::inline_replacement::InlineReplacementMark;
+        let (padding, gap) = pill.frame.as_ref().map_or((Pixels::ZERO, px(4.)), |frame| {
+            (frame.padding_right, frame.gap)
+        });
+        let mut right = pill.bounds.right() - padding;
+        for mark in pill.trailing.iter().rev() {
+            let size_px = mark.size();
+            let origin = point(
+                right - size_px,
+                pill.bounds.origin.y + (line_height - size_px).half(),
+            );
+            let bounds = Bounds::new(origin, size(size_px, size_px));
+            match mark {
+                InlineReplacementMark::Dot { color, ring, .. } => {
+                    window.paint_quad(gpui::quad(
+                        bounds,
+                        size_px / 2.,
+                        if *ring > Pixels::ZERO {
+                            gpui::transparent_black()
+                        } else {
+                            *color
+                        },
+                        *ring,
+                        *color,
+                        gpui::BorderStyle::Solid,
+                    ));
+                }
+                InlineReplacementMark::Icon { path, color, .. } => {
+                    _ = window.paint_svg(
+                        bounds,
+                        path.clone(),
+                        None,
+                        gpui::TransformationMatrix::unit(),
+                        *color,
+                        cx,
+                    );
+                }
+            }
+            right -= size_px + gap;
+        }
     }
 
     /// Paint the replacements' icons, the hover rule and the pointer cursor,
@@ -2720,11 +2814,12 @@ impl<M: InputModeKind> TextElement<M> {
                     icon.clone(),
                     None,
                     gpui::TransformationMatrix::unit(),
-                    pill.color,
+                    pill.icon_color.unwrap_or(pill.color),
                     cx,
                 );
             }
-            if !pill.hitbox.is_hovered(window) {
+            Self::paint_inline_replacement_marks(pill, line_height, window, cx);
+            if !pill.hitbox.is_hovered(window) || pill.frame.is_some() {
                 continue;
             }
             // A 1px dotted rule, drawn dot by dot because a text run's
@@ -3209,9 +3304,18 @@ struct InlineReplacementPill {
     icon: Option<SharedString>,
     icon_size: Pixels,
     icon_inset: Pixels,
+    icon_color: Option<Hsla>,
+    frame: Option<super::inline_replacement::InlineReplacementFrame>,
+    trailing: Vec<super::inline_replacement::InlineReplacementMark>,
     color: Hsla,
     pointer: bool,
     tooltip: Option<SharedString>,
+}
+
+impl InlineReplacementPill {
+    fn pointer_over(&self, window: &Window) -> bool {
+        self.hitbox.is_hovered(window)
+    }
 }
 
 pub(super) struct PrepaintState {
@@ -4212,6 +4316,8 @@ impl<M: InputModeKind> Element for TextElement<M> {
             for (path, color) in &prepaint.range_decoration_frames {
                 window.paint_path(path.clone(), *color);
             }
+
+            Self::paint_inline_replacement_frames(&prepaint.inline_replacement_pills, window);
 
             // Paint selections
             if window.is_window_active() {

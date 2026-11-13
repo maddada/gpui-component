@@ -56,6 +56,58 @@ pub struct InlineLink {
     pub hover_actions: Vec<InlineLinkAction>,
     /// Ghostex fork: how that bar looks.
     pub hover_bar: Option<InlineLinkBar>,
+    /// Ghostex fork: marks drawn after the label, each `gap` from what is
+    /// before it (a session's state dot, the icon of the computer it is on).
+    pub trailing: Vec<InlineLinkMark>,
+}
+
+/// Ghostex fork: a mark a chip draws after its label.
+#[derive(Clone, Debug, PartialEq)]
+pub enum InlineLinkMark {
+    /// A round dot, filled, or a ring of `ring` width when it is not zero.
+    Dot {
+        size: Pixels,
+        color: Hsla,
+        ring: Pixels,
+    },
+    /// A monochrome icon in `color`.
+    Icon {
+        path: SharedString,
+        size: Pixels,
+        color: Hsla,
+    },
+}
+
+impl InlineLinkMark {
+    fn size(&self) -> Pixels {
+        match self {
+            Self::Dot { size, .. } | Self::Icon { size, .. } => *size,
+        }
+    }
+
+    fn element(&self) -> AnyElement {
+        match self {
+            Self::Dot { size, color, ring } if *ring > Pixels::ZERO => div()
+                .size(*size)
+                .flex_shrink_0()
+                .rounded_full()
+                .border(*ring)
+                .border_color(*color)
+                .into_any_element(),
+            Self::Dot { size, color, .. } => div()
+                .size(*size)
+                .flex_shrink_0()
+                .rounded_full()
+                .bg(*color)
+                .into_any_element(),
+            Self::Icon { path, size, color } => svg()
+                .path(path.clone())
+                .size(*size)
+                .flex_shrink_0()
+                .text_color(*color)
+                .into_any_element(),
+        }
+    }
 }
 
 /// Ghostex fork: one button of a chip's hover bar. Its press goes to the link
@@ -118,7 +170,11 @@ impl InlineLink {
         let frame = self.frame.as_ref().map_or(Pixels::ZERO, |frame| {
             (frame.padding_x + frame.border_width) * 2.
         });
-        self.icon_size + self.gap + frame
+        let trailing = self
+            .trailing
+            .iter()
+            .fold(Pixels::ZERO, |width, mark| width + self.gap + mark.size());
+        self.icon_size + self.gap + frame + trailing
     }
 }
 
@@ -336,6 +392,7 @@ pub(super) fn element(
                 .overflow_hidden()
                 .child(inline),
         )
+        .children(reference.trailing.iter().map(InlineLinkMark::element))
         .when_some(chip_hover, |this, hover| {
             this.on_hover(move |hovered, window, cx| {
                 let hovered = *hovered;

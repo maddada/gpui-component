@@ -21,6 +21,30 @@ use crate::{
     text::Text,
 };
 
+/// Ghostex: builds a card in place of a reference's plain tooltip (a chat's session mention shows
+/// the session's hover card), or `None` to keep the plain bubble. Both a text view's reference
+/// chips and an input's inline replacements ask it with their tooltip text.
+type ReferenceCardFn =
+    dyn Fn(&SharedString, &mut Window, &mut App) -> Option<AnyView> + Send + Sync + 'static;
+
+struct ReferenceCards(std::sync::Arc<ReferenceCardFn>);
+
+impl gpui::Global for ReferenceCards {}
+
+/// Ghostex: install the builder [`reference_card`] asks.
+pub fn set_reference_cards<F>(build: F, cx: &mut App)
+where
+    F: Fn(&SharedString, &mut Window, &mut App) -> Option<AnyView> + Send + Sync + 'static,
+{
+    cx.set_global(ReferenceCards(std::sync::Arc::new(build)));
+}
+
+/// Ghostex: the card the host builds for a reference's tooltip `text`, if any.
+pub fn reference_card(text: &SharedString, window: &mut Window, cx: &mut App) -> Option<AnyView> {
+    let build = cx.try_global::<ReferenceCards>()?.0.clone();
+    build(text, window, cx)
+}
+
 /// Ghostex: the corner radius of every tooltip bubble, in a frosted window or not.
 ///
 /// CDXC:Tooltips 2026-10-05 DECISION:

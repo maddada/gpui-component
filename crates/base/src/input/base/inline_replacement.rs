@@ -9,7 +9,7 @@
 //! text in its own color instead of as an element.
 use std::ops::Range;
 
-use gpui::{Bounds, Context, Hsla, Pixels, Point, SharedString, px};
+use gpui::{Bounds, Context, FontWeight, Hsla, Pixels, Point, SharedString, px};
 use ropey::Rope;
 
 use super::{InputBaseState, InputModeKind, RopeExt as _};
@@ -48,6 +48,59 @@ pub struct InlineReplacement {
     pub pointer: bool,
     /// Text the window's tooltip shows while the pointer rests on the replacement.
     pub tooltip: Option<SharedString>,
+    /// Ghostex fork: the icon's own tint, when it differs from the text's (an
+    /// agent's logo in its brand colour).
+    pub icon_color: Option<Hsla>,
+    /// Ghostex fork: the replacement text's weight, when it differs from the line's.
+    pub font_weight: Option<FontWeight>,
+    /// Ghostex fork: a rounded box drawn under the replacement, edge to edge
+    /// of its text (which carries its own padding as spaces); a framed
+    /// replacement takes a fill under the pointer instead of the dotted rule.
+    pub frame: Option<InlineReplacementFrame>,
+    /// Ghostex fork: marks drawn over the replacement's trailing space, laid
+    /// out from its right edge (the last one nearest it).
+    pub trailing: Vec<InlineReplacementMark>,
+}
+
+/// Ghostex fork: the box under a framed replacement.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InlineReplacementFrame {
+    pub border_color: Hsla,
+    pub border_width: Pixels,
+    pub background: Option<Hsla>,
+    pub hover_background: Option<Hsla>,
+    pub radius: Pixels,
+    /// How far the box stays inside the line's height, top and bottom.
+    pub inset_y: Pixels,
+    /// How far the last trailing mark sits from the box's right edge.
+    pub padding_right: Pixels,
+    /// The room between two trailing marks.
+    pub gap: Pixels,
+}
+
+/// Ghostex fork: a mark drawn over a replacement's trailing space.
+#[derive(Clone, Debug, PartialEq)]
+pub enum InlineReplacementMark {
+    /// A round dot, filled, or a ring of `ring` width when it is not zero.
+    Dot {
+        size: Pixels,
+        color: Hsla,
+        ring: Pixels,
+    },
+    /// A monochrome icon in `color`.
+    Icon {
+        path: SharedString,
+        size: Pixels,
+        color: Hsla,
+    },
+}
+
+impl InlineReplacementMark {
+    pub(super) fn size(&self) -> Pixels {
+        match self {
+            Self::Dot { size, .. } | Self::Icon { size, .. } => *size,
+        }
+    }
 }
 
 impl InlineReplacement {
@@ -61,7 +114,35 @@ impl InlineReplacement {
             icon_inset: px(0.),
             pointer: false,
             tooltip: None,
+            icon_color: None,
+            font_weight: None,
+            frame: None,
+            trailing: Vec::new(),
         }
+    }
+
+    /// Ghostex fork: tint the icon apart from the text.
+    pub fn icon_color(mut self, color: impl Into<Hsla>) -> Self {
+        self.icon_color = Some(color.into());
+        self
+    }
+
+    /// Ghostex fork: draw the text at `weight`.
+    pub fn font_weight(mut self, weight: FontWeight) -> Self {
+        self.font_weight = Some(weight);
+        self
+    }
+
+    /// Ghostex fork: draw the replacement in a rounded box.
+    pub fn frame(mut self, frame: InlineReplacementFrame) -> Self {
+        self.frame = Some(frame);
+        self
+    }
+
+    /// Ghostex fork: draw `marks` over the replacement's trailing space.
+    pub fn trailing(mut self, marks: Vec<InlineReplacementMark>) -> Self {
+        self.trailing = marks;
+        self
     }
 
     pub fn color(mut self, color: impl Into<Hsla>) -> Self {
@@ -117,6 +198,7 @@ pub(super) struct InlineReplacementLayout {
     pub(super) text: SharedString,
     pub(super) width: Pixels,
     pub(super) color: Option<Hsla>,
+    pub(super) font_weight: Option<FontWeight>,
 }
 
 /// The replacements of one input.

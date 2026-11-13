@@ -134,9 +134,11 @@ fn inline_replacement_tooltip_handler() -> gpui_base::input::InlineReplacementTo
                 overlay.show_for_bounds(
                     bounds,
                     move |window, cx| {
-                        crate::tooltip::Tooltip::new(text.clone())
-                            .max_w(INLINE_REPLACEMENT_TOOLTIP_MAX_WIDTH)
-                            .build(window, cx)
+                        crate::tooltip::reference_card(&text, window, cx).unwrap_or_else(|| {
+                            crate::tooltip::Tooltip::new(text.clone())
+                                .max_w(INLINE_REPLACEMENT_TOOLTIP_MAX_WIDTH)
+                                .build(window, cx)
+                        })
                     },
                     window,
                     cx,
