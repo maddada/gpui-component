@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use gpui::{
-    Anchor, AnyElement, AnyView, App, ClickEvent, Entity, FontWeight, Hsla,
+    Anchor, AnyElement, AnyView, App, BoxShadow, ClickEvent, Entity, FontWeight, Hsla,
     InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Pixels, SharedString,
     Size, StatefulInteractiveElement as _, Styled as _, Window, anchored, deferred, div, point,
     prelude::FluentBuilder as _, px, svg,
@@ -85,6 +85,8 @@ pub struct InlineLinkBar {
     pub button_hover_background: Hsla,
     pub icon_size: Pixels,
     pub icon_color: Hsla,
+    /// The bar's drop shadow; none when empty.
+    pub shadow: Vec<BoxShadow>,
 }
 
 /// Ghostex fork: whether the pointer is on a chip or on its hover bar, kept
@@ -445,7 +447,7 @@ fn hover_bar(
                             .border(look.border_width)
                             .border_color(look.border_color)
                             .bg(look.background)
-                            .shadow_md()
+                            .shadow(look.shadow.clone())
                             .children(reference.hover_actions.iter().enumerate().map(
                                 |(index, action)| {
                                     let url = action.url.clone();
