@@ -2696,6 +2696,7 @@ impl<M: InputModeKind> TextElement<M> {
                     icon_color: span.icon_color.map(dim),
                     frame: span.frame.clone(),
                     trailing: span.trailing.clone(),
+                    underline: span.underline.clone(),
                     color: dim(span.color.unwrap_or(style.color)),
                     pointer: span.pointer && !state.disabled,
                     tooltip: span.tooltip.clone(),
@@ -2819,19 +2820,46 @@ impl<M: InputModeKind> TextElement<M> {
                 );
             }
             Self::paint_inline_replacement_marks(pill, line_height, window, cx);
-            if !pill.hitbox.is_hovered(window) || pill.frame.is_some() {
+            let hovered = pill.hitbox.is_hovered(window);
+            if pill.frame.is_some() {
                 continue;
             }
-            // A 1px dotted rule, drawn dot by dot because a text run's
-            // underline is always solid.
-            let mut x = pill.bounds.origin.x;
-            let right = pill.bounds.right();
-            while x < right {
-                window.paint_quad(fill(
-                    Bounds::new(point(x, pill.underline_y), size(px(1.), px(1.))),
+            // A dotted rule, drawn dot by dot because a text run's underline is
+            // always solid: under the text at all times when the host asks for
+            // it (stronger under the pointer), else only under the pointer.
+            let (left, right, dot, period, color) = match &pill.underline {
+                Some(underline) => {
+                    let marks = pill
+                        .trailing
+                        .iter()
+                        .fold(Pixels::ZERO, |room, mark| room + mark.size() + px(4.));
+                    let device = window.scale_factor();
+                    let snap = |value: Pixels| px((f32::from(value) * device).round() / device);
+                    (
+                        snap(pill.bounds.origin.x + underline.start),
+                        pill.bounds.right() - marks,
+                        snap(underline.dot).max(px(1. / device)),
+                        snap(underline.period).max(px(2. / device)),
+                        pill.color
+                            .opacity(if hovered { 1. } else { underline.rest_opacity }),
+                    )
+                }
+                None if hovered => (
+                    pill.bounds.origin.x,
+                    pill.bounds.right(),
+                    px(1.),
+                    px(2.),
                     pill.color,
+                ),
+                None => continue,
+            };
+            let mut x = left;
+            while x + dot <= right {
+                window.paint_quad(fill(
+                    Bounds::new(point(x, pill.underline_y), size(dot, dot)),
+                    color,
                 ));
-                x += px(2.);
+                x += period;
             }
         }
 
@@ -3307,6 +3335,7 @@ struct InlineReplacementPill {
     icon_color: Option<Hsla>,
     frame: Option<super::inline_replacement::InlineReplacementFrame>,
     trailing: Vec<super::inline_replacement::InlineReplacementMark>,
+    underline: Option<super::inline_replacement::InlineReplacementUnderline>,
     color: Hsla,
     pointer: bool,
     tooltip: Option<SharedString>,

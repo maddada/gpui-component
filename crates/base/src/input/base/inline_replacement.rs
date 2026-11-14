@@ -60,6 +60,24 @@ pub struct InlineReplacement {
     /// Ghostex fork: marks drawn over the replacement's trailing space, laid
     /// out from its right edge (the last one nearest it).
     pub trailing: Vec<InlineReplacementMark>,
+    /// Ghostex fork: a dotted rule under an unframed replacement's text at all
+    /// times, faint at rest and full strength under the pointer, in place of
+    /// the rule shown only under the pointer.
+    pub underline: Option<InlineReplacementUnderline>,
+}
+
+/// Ghostex fork: the dotted rule under a replacement's text (a session's name
+/// in the chat box). It runs from `start` past the replacement's left edge to
+/// its trailing marks, in the replacement's color at `rest_opacity`, and at
+/// full strength while the pointer is on the replacement.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct InlineReplacementUnderline {
+    pub rest_opacity: f32,
+    /// One dot, and the distance from one dot to the next.
+    pub dot: Pixels,
+    pub period: Pixels,
+    /// Where the rule starts, from the replacement's left edge (past its icon).
+    pub start: Pixels,
 }
 
 /// Ghostex fork: the box under a framed replacement.
@@ -118,7 +136,14 @@ impl InlineReplacement {
             font_weight: None,
             frame: None,
             trailing: Vec::new(),
+            underline: None,
         }
+    }
+
+    /// Ghostex fork: draw a dotted rule under the text at all times.
+    pub fn underline(mut self, underline: InlineReplacementUnderline) -> Self {
+        self.underline = Some(underline);
+        self
     }
 
     /// Ghostex fork: tint the icon apart from the text.

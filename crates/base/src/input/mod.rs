@@ -41,7 +41,9 @@ mod input;
 mod token_presentation;
 #[doc(hidden)]
 pub use inline_replacement::InlineReplacementTooltipHandler;
-pub use inline_replacement::{InlineReplacement, InlineReplacementFrame, InlineReplacementMark};
+pub use inline_replacement::{
+    InlineReplacement, InlineReplacementFrame, InlineReplacementMark, InlineReplacementUnderline,
+};
 pub use inline_tokens::{InlineToken, InlineTokenError, InlineTokenSpan, InputContent};
 pub(crate) use token_presentation::InlineTokenPresentation;
 pub use token_presentation::{

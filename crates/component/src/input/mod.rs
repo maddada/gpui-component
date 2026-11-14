@@ -3,9 +3,9 @@ mod content_type;
 mod input;
 mod token;
 pub use gpui_base::input::{
-    ActivateToken, InlineReplacement, InlineReplacementFrame, InlineReplacementMark, InlineToken,
-    InlineTokenClickEvent, InlineTokenContext, InlineTokenError, InlineTokenHoverEvent,
-    InlineTokenSpan, InputContent,
+    ActivateToken, InlineReplacement, InlineReplacementFrame, InlineReplacementMark,
+    InlineReplacementUnderline, InlineToken, InlineTokenClickEvent, InlineTokenContext,
+    InlineTokenError, InlineTokenHoverEvent, InlineTokenSpan, InputContent,
 };
 pub use token::InputToken;
 pub mod language_config;
