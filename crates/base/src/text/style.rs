@@ -74,6 +74,8 @@ pub struct TextViewStyle {
     arrow_over_text: bool,
     // Ghostex fork: the weight `**strong**` text is drawn at (Settings draws it at 500).
     strong_weight: FontWeight,
+    // Ghostex fork: the colour `**strong**` text is drawn in (`None` keeps the running text's).
+    strong_color: Option<Hsla>,
     /// Explicit inline code refinements, applied after theme and surface colors.
     ///
     /// Ghostex fork: upstream names this `inline_code_style`; the fork keeps
@@ -126,6 +128,7 @@ impl PartialEq for TextViewStyle {
             && self.default_cursor == other.default_cursor
             && self.arrow_over_text == other.arrow_over_text
             && self.strong_weight == other.strong_weight
+            && self.strong_color == other.strong_color
             && self.list_style == other.list_style
             && self.blockquote_style == other.blockquote_style
             && self.table_background == other.table_background
@@ -187,6 +190,7 @@ impl TextViewStyle {
             default_cursor: false,
             arrow_over_text: false,
             strong_weight: FontWeight::BOLD,
+            strong_color: None,
             inline_code_refinement: StyleRefinement::default(),
             list_style: StyleRefinement::default(),
             blockquote_style: StyleRefinement::default(),
@@ -394,6 +398,13 @@ impl TextViewStyle {
     /// [`FontWeight::BOLD`].
     pub fn with_strong_weight(mut self, weight: FontWeight) -> Self {
         self.strong_weight = weight;
+        self
+    }
+
+    /// Ghostex fork: sets the colour `**strong**` text is drawn in. `None`
+    /// (the default) keeps the running text's colour.
+    pub fn with_strong_color(mut self, color: Option<Hsla>) -> Self {
+        self.strong_color = color;
         self
     }
 
@@ -625,6 +636,12 @@ impl TextViewStyle {
     /// [`Self::with_strong_weight`].
     pub fn strong_weight(&self) -> FontWeight {
         self.strong_weight
+    }
+
+    /// Ghostex fork: the colour `**strong**` text is drawn in; see
+    /// [`Self::with_strong_color`].
+    pub fn strong_color(&self) -> Option<Hsla> {
+        self.strong_color
     }
 
     /// Explicit inline code typography and box refinements (upstream's

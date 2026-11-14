@@ -2824,6 +2824,10 @@ fn mark_highlight(
     if mark.bold {
         // Ghostex fork: the style picks the strong weight (default bold).
         highlight.font_weight = Some(node_cx.style.strong_weight());
+        // Ghostex fork: and, when the style names one, the strong colour.
+        if let Some(color) = node_cx.style.strong_color() {
+            highlight.color = Some(color);
+        }
     }
     if mark.italic {
         highlight.font_style = Some(FontStyle::Italic);

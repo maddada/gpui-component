@@ -113,6 +113,9 @@ pub struct TextViewStyle {
     /// Ghostex fork: the weight `**strong**` text is drawn at. Default
     /// [`FontWeight::BOLD`].
     pub strong_weight: FontWeight,
+    /// Ghostex fork: the colour `**strong**` text is drawn in. `None` (the
+    /// default) keeps the running text's colour.
+    pub strong_color: Option<Hsla>,
     /// Link text color. `None` keeps the theme's `link`, which is wrong for a
     /// document drawn in a different light/dark mode than the app theme.
     pub link: Option<Hsla>,
@@ -149,6 +152,7 @@ impl Default for TextViewStyle {
             default_cursor: false,
             arrow_over_text: false,
             strong_weight: FontWeight::BOLD,
+            strong_color: None,
             link: None,
             link_underline: true,
             is_dark: false,
@@ -189,6 +193,7 @@ impl PartialEq for TextViewStyle {
             && self.default_cursor == other.default_cursor
             && self.arrow_over_text == other.arrow_over_text
             && self.strong_weight == other.strong_weight
+            && self.strong_color == other.strong_color
             && self.link == other.link
             && self.link_underline == other.link_underline
             && self.is_dark == other.is_dark
@@ -266,6 +271,13 @@ impl TextViewStyle {
     /// Ghostex fork: draw `**strong**` text at this weight instead of bold.
     pub fn strong_weight(mut self, weight: FontWeight) -> Self {
         self.strong_weight = weight;
+        self
+    }
+
+    /// Ghostex fork: draw `**strong**` text in this colour instead of the
+    /// running text's (`None` keeps it).
+    pub fn strong_color(mut self, color: Option<Hsla>) -> Self {
+        self.strong_color = color;
         self
     }
 }

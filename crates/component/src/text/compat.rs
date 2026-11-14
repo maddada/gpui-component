@@ -482,6 +482,7 @@ pub(super) fn resolve_component_style(
         .with_arrow_over_text(legacy.arrow_over_text)
         // Ghostex fork: the strong weight passes straight through.
         .with_strong_weight(legacy.strong_weight)
+        .with_strong_color(legacy.strong_color)
         .with_link_underline(legacy.link_underline)
         .with_dark(is_dark);
     match legacy.link {
