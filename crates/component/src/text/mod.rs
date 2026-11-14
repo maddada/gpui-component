@@ -10,10 +10,11 @@ pub use compat::{
 pub use frontmatter::FrontmatterPlugin;
 pub use gpui_base::text::{
     CodeBlock, InlineCodeStyle, InlineElement, InlineLink, InlineLinkAction, InlineLinkBar,
-    InlineLinkFrame, InlineLinkMark, InlineRenderContext, MarkdownBlockParserFn,
-    MarkdownBlockRenderFn, MarkdownExtensions, MarkdownNode, MarkdownParseContext, MarkdownPlugin,
-    RangeHighlight, RangeHighlightError, RenderedText, SelectionFormat, TableData, TextFind,
-    TextViewLink, TextViewMotion, TextViewState, markdown_ast,
+    InlineLinkFrame, InlineLinkMark, InlineLinkUnderline, InlineRenderContext,
+    MarkdownBlockParserFn, MarkdownBlockRenderFn, MarkdownExtensions, MarkdownNode,
+    MarkdownParseContext, MarkdownPlugin, RangeHighlight, RangeHighlightError, RenderedText,
+    SelectionFormat, TableData, TextFind, TextViewLink, TextViewMotion, TextViewState,
+    markdown_ast,
 };
 pub use style::TextViewStyle;
 

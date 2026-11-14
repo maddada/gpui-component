@@ -1,13 +1,16 @@
 //! Links a host presents as reference chips: an icon and a coloured label in
 //! place of the link's own text, one indivisible piece of the line.
 
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use gpui::{
-    Anchor, AnyElement, AnyView, App, BoxShadow, ClickEvent, Entity, FontWeight, Hsla,
-    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Pixels, SharedString,
-    Size, StatefulInteractiveElement as _, Styled as _, Window, anchored, deferred, div, point,
-    prelude::FluentBuilder as _, px, svg,
+    Anchor, AnyElement, AnyView, App, Bounds, BoxShadow, ClickEvent, ElementId, Entity, FontWeight,
+    HitboxBehavior, Hsla, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,
+    Pixels, SharedString, Size, StatefulInteractiveElement as _, Styled as _, Window, anchored,
+    canvas, deferred, div, point, prelude::FluentBuilder as _, px, size, svg,
 };
 
 use super::{
@@ -59,6 +62,112 @@ pub struct InlineLink {
     /// Ghostex fork: marks drawn after the label, each `gap` from what is
     /// before it (a session's state dot, the icon of the computer it is on).
     pub trailing: Vec<InlineLinkMark>,
+    /// Ghostex fork: a dotted line under the label (a session's name), faint
+    /// at rest and full strength under the pointer.
+    pub underline: Option<InlineLinkUnderline>,
+}
+
+/// Ghostex fork: the dotted line under a chip's label. Text underlines are
+/// solid or wavy, so the dots are painted one by one on device pixels at the
+/// height an underline would sit; under the pointer `rest_opacity` fades to
+/// full strength over `fade` (zero for no motion), both ways.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct InlineLinkUnderline {
+    pub color: Hsla,
+    pub rest_opacity: f32,
+    /// One dot, and the distance from one dot to the next.
+    pub dot: Pixels,
+    pub period: Pixels,
+    pub fade: Duration,
+}
+
+/// Where a chip's underline is in its fade: 0 at rest, 1 under the pointer,
+/// kept per chip so a fade reversed halfway carries on from where it got to.
+#[derive(Clone, Copy, Default)]
+struct UnderlineFade {
+    hovered: bool,
+    from: f32,
+    started: Option<Instant>,
+}
+
+impl UnderlineFade {
+    fn at(&self, now: Instant, fade: Duration) -> f32 {
+        let target = if self.hovered { 1. } else { 0. };
+        let Some(started) = self.started else {
+            return target;
+        };
+        let t = now.duration_since(started).as_secs_f32() / fade.as_secs_f32().max(f32::EPSILON);
+        self.from + (target - self.from) * gpui::ease_out_quint()(t.min(1.))
+    }
+
+    /// Follows the pointer; answers the fade's value and whether it still moves.
+    fn advance(&mut self, hovered: bool, now: Instant, fade: Duration) -> (f32, bool) {
+        if hovered != self.hovered {
+            self.from = self.at(now, fade);
+            self.hovered = hovered;
+            self.started = (!fade.is_zero()).then_some(now);
+        }
+        if self
+            .started
+            .is_some_and(|started| now.duration_since(started) >= fade)
+        {
+            self.started = None;
+        }
+        (self.at(now, fade), self.started.is_some())
+    }
+}
+
+/// The underline's dots under the label, `left` and `right` in from the
+/// chip's edges, painted with the chip; its own hitbox follows the pointer.
+fn underline_element(underline: &InlineLinkUnderline, left: Pixels, right: Pixels) -> AnyElement {
+    let underline = underline.clone();
+    canvas(
+        |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+        move |bounds, hitbox, window, _| {
+            let hovered = hitbox.is_hovered(window);
+            let (fade, moving) = window.with_global_id(
+                ElementId::Name("inline-link-underline".into()),
+                |id, window| {
+                    window.with_element_state::<UnderlineFade, _>(id, |fade, _| {
+                        let mut fade = fade.unwrap_or_default();
+                        (fade.advance(hovered, Instant::now(), underline.fade), fade)
+                    })
+                },
+            );
+            let style = window.text_style();
+            let font_size = style.font_size.to_pixels(window.rem_size());
+            let system = window.text_system();
+            let font = system.resolve_font(&style.font());
+            let (ascent, descent) = (
+                system.ascent(font, font_size),
+                system.descent(font, font_size).abs(),
+            );
+            let device = window.scale_factor();
+            let snap = |value: f32| (value * device).round() / device;
+            let dot = snap(f32::from(underline.dot)).max(1. / device);
+            let period = snap(f32::from(underline.period)).max(2. / device);
+            let y = snap(f32::from(
+                bounds.origin.y + gpui::underline_y_offset(bounds.size.height, ascent, descent),
+            ));
+            let rest = underline.rest_opacity;
+            let color = underline.color.opacity(rest + (1. - rest) * fade);
+            let end = f32::from(bounds.origin.x + bounds.size.width - right);
+            let mut x = snap(f32::from(bounds.origin.x + left));
+            while x + dot <= end {
+                window.paint_quad(gpui::fill(
+                    Bounds::new(point(px(x), px(y)), size(px(dot), px(dot))),
+                    color,
+                ));
+                x += period;
+            }
+            if moving {
+                window.request_animation_frame();
+            }
+        },
+    )
+    .absolute()
+    .inset_0()
+    .into_any_element()
 }
 
 /// Ghostex fork: a mark a chip draws after its label.
@@ -393,6 +502,23 @@ pub(super) fn element(
                 .child(inline),
         )
         .children(reference.trailing.iter().map(InlineLinkMark::element))
+        // The dots run under the label only; the chip's `hover` style is what
+        // redraws it when the pointer crosses.
+        .when_some(reference.underline.as_ref(), |this, underline| {
+            let frame = reference
+                .frame
+                .as_ref()
+                .map_or(Pixels::ZERO, |frame| frame.padding_x + frame.border_width);
+            let lead = if reference.icon.is_empty() {
+                Pixels::ZERO
+            } else {
+                reference.icon_size + reference.gap
+            };
+            let right = (size.width - frame - lead - label_width).max(Pixels::ZERO);
+            this.relative()
+                .hover(|style| style)
+                .child(underline_element(underline, frame + lead, right))
+        })
         .when_some(chip_hover, |this, hover| {
             this.on_hover(move |hovered, window, cx| {
                 let hovered = *hovered;

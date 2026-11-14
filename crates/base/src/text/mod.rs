@@ -27,6 +27,7 @@ pub(crate) use inline::InlineState;
 pub use inline_element::*;
 pub use inline_link::{
     InlineLink, InlineLinkAction, InlineLinkBar, InlineLinkFrame, InlineLinkMark,
+    InlineLinkUnderline,
 };
 pub use markdown_ext::*;
 pub use node::{CodeBlock, TableData};
