@@ -2696,6 +2696,7 @@ impl<M: InputModeKind> TextElement<M> {
                     icon_color: span.icon_color.map(dim),
                     frame: span.frame.clone(),
                     trailing: span.trailing.clone(),
+                    leading: span.leading.clone(),
                     underline: span.underline.clone(),
                     color: dim(span.color.unwrap_or(style.color)),
                     pointer: span.pointer && !state.disabled,
@@ -2721,9 +2722,12 @@ impl<M: InputModeKind> TextElement<M> {
                 frame.background
             };
             let bounds = Bounds::new(
-                point(pill.bounds.origin.x, pill.bounds.origin.y + frame.inset_y),
+                point(
+                    pill.bounds.origin.x + frame.inset_x,
+                    pill.bounds.origin.y + frame.inset_y,
+                ),
                 size(
-                    pill.bounds.size.width,
+                    (pill.bounds.size.width - frame.inset_x * 2.).max(px(1.)),
                     (pill.bounds.size.height - frame.inset_y * 2.).max(px(1.)),
                 ),
             );
@@ -2738,52 +2742,71 @@ impl<M: InputModeKind> TextElement<M> {
         }
     }
 
-    /// Ghostex fork: a replacement's trailing marks, from its right edge in.
+    /// Ghostex fork: a replacement's leading marks, from its left edge in,
+    /// and its trailing marks, from its right edge in.
     fn paint_inline_replacement_marks(
         pill: &InlineReplacementPill,
         line_height: Pixels,
         window: &mut Window,
         cx: &mut App,
     ) {
-        use super::inline_replacement::InlineReplacementMark;
-        let (padding, gap) = pill.frame.as_ref().map_or((Pixels::ZERO, px(4.)), |frame| {
-            (frame.padding_right, frame.gap)
-        });
-        let mut right = pill.bounds.right() - padding;
+        let (inset, padding_left, padding_right, gap) =
+            pill.frame
+                .as_ref()
+                .map_or((Pixels::ZERO, Pixels::ZERO, Pixels::ZERO, px(4.)), |frame| {
+                    (frame.inset_x, frame.padding_left, frame.padding_right, frame.gap)
+                });
+        let mut left = pill.bounds.origin.x + inset + padding_left;
+        for mark in &pill.leading {
+            Self::paint_inline_replacement_mark(pill, mark, left, line_height, window, cx);
+            left += mark.size() + gap;
+        }
+        let mut right = pill.bounds.right() - inset - padding_right;
         for mark in pill.trailing.iter().rev() {
             let size_px = mark.size();
-            let origin = point(
-                right - size_px,
-                pill.bounds.origin.y + (line_height - size_px).half(),
-            );
-            let bounds = Bounds::new(origin, size(size_px, size_px));
-            match mark {
-                InlineReplacementMark::Dot { color, ring, .. } => {
-                    window.paint_quad(gpui::quad(
-                        bounds,
-                        size_px / 2.,
-                        if *ring > Pixels::ZERO {
-                            gpui::transparent_black()
-                        } else {
-                            *color
-                        },
-                        *ring,
-                        *color,
-                        gpui::BorderStyle::Solid,
-                    ));
-                }
-                InlineReplacementMark::Icon { path, color, .. } => {
-                    _ = window.paint_svg(
-                        bounds,
-                        path.clone(),
-                        None,
-                        gpui::TransformationMatrix::unit(),
-                        *color,
-                        cx,
-                    );
-                }
-            }
+            Self::paint_inline_replacement_mark(pill, mark, right - size_px, line_height, window, cx);
             right -= size_px + gap;
+        }
+    }
+
+    /// Ghostex fork: one mark of a replacement, its left edge at `x`.
+    fn paint_inline_replacement_mark(
+        pill: &InlineReplacementPill,
+        mark: &super::inline_replacement::InlineReplacementMark,
+        x: Pixels,
+        line_height: Pixels,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        use super::inline_replacement::InlineReplacementMark;
+        let size_px = mark.size();
+        let origin = point(x, pill.bounds.origin.y + (line_height - size_px).half());
+        let bounds = Bounds::new(origin, size(size_px, size_px));
+        match mark {
+            InlineReplacementMark::Dot { color, ring, .. } => {
+                window.paint_quad(gpui::quad(
+                    bounds,
+                    size_px / 2.,
+                    if *ring > Pixels::ZERO {
+                        gpui::transparent_black()
+                    } else {
+                        *color
+                    },
+                    *ring,
+                    *color,
+                    gpui::BorderStyle::Solid,
+                ));
+            }
+            InlineReplacementMark::Icon { path, color, .. } => {
+                _ = window.paint_svg(
+                    bounds,
+                    path.clone(),
+                    None,
+                    gpui::TransformationMatrix::unit(),
+                    *color,
+                    cx,
+                );
+            }
         }
     }
 
@@ -3335,6 +3358,7 @@ struct InlineReplacementPill {
     icon_color: Option<Hsla>,
     frame: Option<super::inline_replacement::InlineReplacementFrame>,
     trailing: Vec<super::inline_replacement::InlineReplacementMark>,
+    leading: Vec<super::inline_replacement::InlineReplacementMark>,
     underline: Option<super::inline_replacement::InlineReplacementUnderline>,
     color: Hsla,
     pointer: bool,

@@ -62,6 +62,16 @@ pub struct InlineLink {
     /// Ghostex fork: marks drawn after the label, each `gap` from what is
     /// before it (a session's state dot, the icon of the computer it is on).
     pub trailing: Vec<InlineLinkMark>,
+    /// Ghostex fork: marks drawn before the icon, each `gap` from what is
+    /// after it (the icon of the computer a session is on).
+    pub leading: Vec<InlineLinkMark>,
+    /// Ghostex fork: clear room on each side of the chip, outside its frame,
+    /// so it never touches the words beside it even when the text has no
+    /// space there.
+    pub margin_x: Pixels,
+    /// Ghostex fork: the widest the chip grows; a longer label ends in an
+    /// ellipsis, as it does when the chip is wider than the line.
+    pub max_width: Option<Pixels>,
     /// Ghostex fork: a dotted line under the label (a session's name), faint
     /// at rest and full strength under the pointer.
     pub underline: Option<InlineLinkUnderline>,
@@ -279,11 +289,17 @@ impl InlineLink {
         let frame = self.frame.as_ref().map_or(Pixels::ZERO, |frame| {
             (frame.padding_x + frame.border_width) * 2.
         });
-        let trailing = self
+        let marks = self
             .trailing
             .iter()
+            .chain(&self.leading)
             .fold(Pixels::ZERO, |width, mark| width + self.gap + mark.size());
-        self.icon_size + self.gap + frame + trailing
+        self.icon_size + self.gap + frame + marks + self.margin_x * 2.
+    }
+
+    /// The chip's width for a `natural` one, held to `max_width`.
+    pub(super) fn capped_width(&self, natural: Pixels) -> Pixels {
+        self.max_width.map_or(natural, |max| natural.min(max))
     }
 }
 
@@ -446,6 +462,9 @@ pub(super) fn element(
     let has_secondary = secondary.is_some();
     let title = reference.title.clone();
     let label_width = (size.width - reference.extra_width()).max(px(0.));
+    let margin = reference.margin_x;
+    let outer = size;
+    let size = gpui::size((size.width - margin * 2.).max(px(0.)), size.height);
     let bar = hover.as_ref().and_then(|hover| {
         let state = *hover.read(cx);
         hover_bar(
@@ -459,7 +478,7 @@ pub(super) fn element(
         )
     });
     let chip_hover = hover.clone();
-    div()
+    let chip = div()
         .id(("inline-link", id))
         .role(gpui::Role::Link)
         .aria_label(SharedString::from(format!("Open {}", reference.label)))
@@ -485,6 +504,7 @@ pub(super) fn element(
         .when_some(tooltip.filter(|_| !title.is_empty()), |this, tooltip| {
             this.tooltip(move |window, cx| tooltip(title.clone(), window, cx))
         })
+        .children(reference.leading.iter().map(InlineLinkMark::element))
         .when(!reference.icon.is_empty(), |this| {
             this.child(
                 svg()
@@ -509,11 +529,15 @@ pub(super) fn element(
                 .frame
                 .as_ref()
                 .map_or(Pixels::ZERO, |frame| frame.padding_x + frame.border_width);
-            let lead = if reference.icon.is_empty() {
-                Pixels::ZERO
-            } else {
-                reference.icon_size + reference.gap
-            };
+            let lead = reference
+                .leading
+                .iter()
+                .fold(Pixels::ZERO, |width, mark| width + mark.size() + reference.gap)
+                + if reference.icon.is_empty() {
+                    Pixels::ZERO
+                } else {
+                    reference.icon_size + reference.gap
+                };
             let right = (size.width - frame - lead - label_width).max(Pixels::ZERO);
             this.relative()
                 .hover(|style| style)
@@ -571,7 +595,17 @@ pub(super) fn element(
                 cx.stop_propagation();
                 secondary(&secondary_url, event.modifiers, window, cx);
             })
-        })
+        });
+    if margin <= Pixels::ZERO {
+        return chip.into_any_element();
+    }
+    div()
+        .w(outer.width)
+        .h(outer.height)
+        .flex()
+        .items_center()
+        .pl(margin)
+        .child(chip)
         .into_any_element()
 }
 

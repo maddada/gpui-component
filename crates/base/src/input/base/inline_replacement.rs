@@ -60,6 +60,9 @@ pub struct InlineReplacement {
     /// Ghostex fork: marks drawn over the replacement's trailing space, laid
     /// out from its right edge (the last one nearest it).
     pub trailing: Vec<InlineReplacementMark>,
+    /// Ghostex fork: marks drawn over the replacement's leading space, laid
+    /// out from its left edge (past the frame's `inset_x` and `padding_left`).
+    pub leading: Vec<InlineReplacementMark>,
     /// Ghostex fork: a dotted rule under an unframed replacement's text at all
     /// times, faint at rest and full strength under the pointer, in place of
     /// the rule shown only under the pointer.
@@ -90,6 +93,12 @@ pub struct InlineReplacementFrame {
     pub radius: Pixels,
     /// How far the box stays inside the line's height, top and bottom.
     pub inset_y: Pixels,
+    /// How far the box stays inside the replacement's text, left and right,
+    /// so the box keeps clear of the words beside it (the text carries that
+    /// room as spaces).
+    pub inset_x: Pixels,
+    /// How far the first leading mark sits from the box's left edge.
+    pub padding_left: Pixels,
     /// How far the last trailing mark sits from the box's right edge.
     pub padding_right: Pixels,
     /// The room between two trailing marks.
@@ -136,6 +145,7 @@ impl InlineReplacement {
             font_weight: None,
             frame: None,
             trailing: Vec::new(),
+            leading: Vec::new(),
             underline: None,
         }
     }
@@ -161,6 +171,12 @@ impl InlineReplacement {
     /// Ghostex fork: draw the replacement in a rounded box.
     pub fn frame(mut self, frame: InlineReplacementFrame) -> Self {
         self.frame = Some(frame);
+        self
+    }
+
+    /// Ghostex fork: draw `marks` over the replacement's leading space.
+    pub fn leading(mut self, marks: Vec<InlineReplacementMark>) -> Self {
+        self.leading = marks;
         self
     }
 

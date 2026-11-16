@@ -1323,12 +1323,11 @@ fn layout_measured_flow(
                     // label, narrowed to the line when it is wider than it.
                     let runs = text_runs(text.len(), text_style, highlights);
                     let shaped_line = shape_line(text.clone(), font_size, &runs, window);
-                    let natural = shaped_line.width() + reference.extra_width();
-                    let clamped = wrap_width.is_some_and(|wrap_width| natural > wrap_width);
-                    let width = match wrap_width {
-                        Some(wrap_width) if clamped => wrap_width,
-                        _ => natural,
-                    };
+                    let full = shaped_line.width() + reference.extra_width();
+                    let natural = reference.capped_width(full);
+                    let clamped = natural < full
+                        || wrap_width.is_some_and(|wrap_width| natural > wrap_width);
+                    let width = wrap_width.map_or(natural, |wrap_width| natural.min(wrap_width));
                     let glyph_size = size(width, shaped_line.ascent + shaped_line.descent);
                     let baseline = shaped_line.ascent;
                     line_ascent = line_ascent.max(baseline - body_overflow_above);
@@ -1799,6 +1798,7 @@ fn line_ranges(
                             )
                             .width
                             + reference.extra_width();
+                        let width = reference.capped_width(width);
                         wrap_fragments
                             .push(WrapLineFragment::element(width.min(wrap_width), text.len()));
                     }
@@ -1987,8 +1987,10 @@ fn shaped_spans(
                     ..
                 } => {
                     let runs = text_runs(text.len(), text_style, highlights);
-                    let natural = shape_line(text.clone(), font_size, &runs, window).width()
-                        + reference.extra_width();
+                    let natural = reference.capped_width(
+                        shape_line(text.clone(), font_size, &runs, window).width()
+                            + reference.extra_width(),
+                    );
                     spans.push(ShapedSpan::Fixed {
                         range: item_start..item_end,
                         width: natural.min(wrap_width),
