@@ -827,6 +827,12 @@ impl Element for InlineFlow {
                         (fragment_size.height - insets.top - insets.bottom).into();
                     fragment_style.white_space = WhiteSpace::Nowrap;
                     if let Some(reference) = reference.as_ref().filter(|_| *clamped) {
+                        // Ghostex fork: GPUI decides whether to shorten with the style's font,
+                        // not the runs', so a chip in its own font (a command chip's mono, wider
+                        // than the prose) measured as fitting and was clipped with no ellipsis.
+                        if let Some(family) = reference.link.font_family.clone() {
+                            fragment_style.font_family = family;
+                        }
                         fragment_style.text_overflow = Some(if reference.link.truncate_start {
                             gpui::TextOverflow::TruncateStart(ELLIPSIS)
                         } else {
