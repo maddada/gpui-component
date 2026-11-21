@@ -688,11 +688,17 @@ impl Render for TooltipOverlay {
 
         // The room between the native views on the trigger's row; a bubble wider than it wraps
         // (the component `Tooltip::render` explains the min-width chain that lets it).
-        let gap = native_occlusion_row_gap(
-            trigger_bounds,
-            window.native_occlusions(),
-            window.viewport_size(),
-        );
+        // CDXC:Tooltips 2026-11-21 WHY: the user saw the sidebar rail's tooltips "very squished"
+        // (one letter a line) with the sidebar collapsed: a page's native browser view starts
+        // right at the rail, so the room was the rail's width. A presented tooltip draws in a
+        // window of its own above native views and keeps its placement (see the positioner), so
+        // only the window's width bounds it, as on a row with no native view.
+        let occlusions: &[Bounds<Pixels>] = if window.tooltip_presenter_active() {
+            &[]
+        } else {
+            window.native_occlusions()
+        };
+        let gap = native_occlusion_row_gap(trigger_bounds, occlusions, window.viewport_size());
         let room = gap.end - gap.start - WINDOW_MARGIN * 2.;
         let rendered = div()
             .flex()
