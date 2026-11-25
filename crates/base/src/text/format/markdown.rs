@@ -32,14 +32,20 @@ pub(crate) fn parse(source: &str, cx: &mut NodeContext) -> Result<ParsedDocument
 /// Punctuation that ends a bare address: CJK and full-width punctuation, curly quotes and the
 /// ellipsis. GFM ends an autolink literal only at ASCII punctuation, so in `页（http://a/?x=1），见`
 /// it kept `），见` as part of the address (Ghostex #762). None of these is written inside a real
-/// URL, and letters of any script (an IDN host, a CJK path) still carry on. Ghostex's link list
-/// (`gx-chat-core` transcript/markdown_links.rs) ends addresses at the same characters.
+/// URL, and letters of any script (an IDN host, a CJK path) still carry on, including the letters
+/// among the CJK symbols (々 〆 〇, the Hangzhou numerals, the kana repeat marks, 〸 〹 〺 〻 〼),
+/// so `https://ja.wikipedia.org/wiki/佐々木` stays whole. Ghostex's link list (`gx-chat-core`
+/// transcript/markdown_links.rs) ends addresses at the same characters.
 fn ends_bare_link(character: char) -> bool {
     matches!(
         character,
         '\u{2018}'..='\u{201F}'
             | '\u{2026}'
-            | '\u{3000}'..='\u{303F}'
+            | '\u{3000}'..='\u{3004}'
+            | '\u{3008}'..='\u{3020}'
+            | '\u{302A}'..='\u{3030}'
+            | '\u{3036}'..='\u{3037}'
+            | '\u{303D}'..='\u{303F}'
             | '\u{FE10}'..='\u{FE1F}'
             | '\u{FE30}'..='\u{FE6B}'
             | '\u{FF01}'..='\u{FF0F}'
@@ -49,45 +55,121 @@ fn ends_bare_link(character: char) -> bool {
     )
 }
 
+/// Whether `address` written up to a dot look-alike (。 ． ｡) is still in its host: past any
+/// `scheme://` and before the first `/`, `?` or `#`. Ending the address there would link another
+/// domain (`https://example.com。au/login` is not `https://example.com`), so such an address is
+/// not linked at all. Ghostex's link list (`gx-chat-core` transcript/markdown_links.rs) applies
+/// the same rule.
+fn ends_in_host(address: &str, end: char) -> bool {
+    if !matches!(end, '\u{3002}' | '\u{FF0E}' | '\u{FF61}') {
+        return false;
+    }
+    let host = match address.split_once("://") {
+        Some((scheme, rest))
+            if !scheme.is_empty()
+                && scheme.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || "+.-".contains(character)
+                }) =>
+        {
+            rest
+        }
+        _ => address,
+    };
+    !host.contains(['/', '?', '#'])
+}
+
+/// The length GFM gives a bare address written as `address` and followed by a space, or `None`
+/// when that is no address. The parser drops trailing `?!.,:*_~`, quotes, an entity-like `&x;`
+/// and an unbalanced `)` from a literal that ends at whitespace, but not from one that ran on
+/// into wide punctuation, so the shortened address goes through the same parser again.
+fn gfm_bare_link_len(address: &str) -> Option<usize> {
+    if !address.ends_with(|character: char| character.is_ascii_punctuation()) {
+        return Some(address.len());
+    }
+    let mut options = ParseOptions::default();
+    options.constructs.gfm_autolink_literal = true;
+    let Ok(Node::Root(root)) = markdown::to_mdast(address, &options) else {
+        return None;
+    };
+    let Some(Node::Paragraph(paragraph)) = root.children.first() else {
+        return None;
+    };
+    let Some(Node::Link(link)) = paragraph.children.first() else {
+        return None;
+    };
+    let position = link.position.as_ref()?;
+    (position.start.offset == 0).then_some(position.end.offset)
+}
+
 /// Ends every bare address (a GFM autolink literal) at the first character `ends_bare_link`
-/// accepts; what follows becomes plain text again. `<…>` and `[…](…)` links keep the address their
-/// author wrote.
+/// accepts, trimmed as GFM trims an address that ends at a space; what follows becomes plain text
+/// again. `<…>` and `[…](…)` links keep the address their author wrote, and their labels are
+/// never linked again. The children are rebuilt in one pass, so a paragraph of many links stays
+/// linear.
 fn end_bare_links_at_wide_punctuation(node: &mut Node, source: &str) {
     let Some(children) = node.children_mut() else {
         return;
     };
-    let mut index = 0;
-    while index < children.len() {
-        if let Some(rest) = split_bare_link(&mut children[index], source) {
-            children.insert(index + 1, rest);
-            index += 2;
-            continue;
-        }
-        end_bare_links_at_wide_punctuation(&mut children[index], source);
-        index += 1;
+    if !children.iter().any(|child| child.children().is_some()) {
+        return;
     }
+    let mut rebuilt = Vec::with_capacity(children.len());
+    for mut child in std::mem::take(children) {
+        match child {
+            Node::Link(link) => end_bare_link(link, source, &mut rebuilt),
+            // The label of a reference link is as explicit as that of an inline one.
+            Node::LinkReference(_) => rebuilt.push(child),
+            _ => {
+                end_bare_links_at_wide_punctuation(&mut child, source);
+                rebuilt.push(child);
+            }
+        }
+    }
+    *children = rebuilt;
 }
 
-/// Shortens a bare-address link to its part before wide punctuation and answers the text that
-/// followed, or `None` when `node` is no such link.
-fn split_bare_link(node: &mut Node, source: &str) -> Option<Node> {
-    let Node::Link(link) = node else {
-        return None;
+/// Pushes `link` shortened to its part before wide punctuation and the text that followed, the
+/// whole address as plain text when it would end in its host (`ends_in_host`) or is no address
+/// once shortened, or `link` untouched when it is no bare address that needs ending.
+fn end_bare_link(mut link: mdast::Link, source: &str, out: &mut Vec<Node>) {
+    let Some(position) = link.position.clone() else {
+        out.push(Node::Link(link));
+        return;
     };
-    let position = link.position.clone()?;
-    let [Node::Text(label)] = link.children.as_mut_slice() else {
-        return None;
+    let [Node::Text(label)] = link.children.as_slice() else {
+        out.push(Node::Link(link));
+        return;
     };
-    // Only a bare address is written exactly as its label.
-    if source.get(position.start.offset..position.end.offset)? != label.value {
-        return None;
-    }
-    let cut = label.value.find(ends_bare_link).filter(|cut| *cut > 0)?;
-    // `www.` and email literals get a scheme in front of what was written.
-    let url_cut = link
-        .url
-        .ends_with(label.value.as_str())
-        .then(|| link.url.len() - (label.value.len() - cut))?;
+    // Only a bare address is written exactly as its label, and `www.` and email literals get a
+    // scheme in front of what was written.
+    let bare = source.get(position.start.offset..position.end.offset) == Some(&label.value)
+        && link.url.ends_with(label.value.as_str());
+    let Some((cut, end)) = bare
+        .then(|| label.value.char_indices().find(|(_, c)| ends_bare_link(*c)))
+        .flatten()
+        .filter(|(cut, _)| *cut > 0)
+    else {
+        out.push(Node::Link(link));
+        return;
+    };
+    let address = &label.value[..cut];
+    let Some(cut) = (!ends_in_host(address, end))
+        .then(|| gfm_bare_link_len(address))
+        .flatten()
+    else {
+        let Some(Node::Text(label)) = link.children.pop() else {
+            unreachable!("the label was matched above");
+        };
+        out.push(Node::Text(mdast::Text {
+            value: label.value,
+            position: Some(position),
+        }));
+        return;
+    };
+    let url_cut = link.url.len() - (label.value.len() - cut);
+    let Some(Node::Text(label)) = link.children.first_mut() else {
+        unreachable!("the label was matched above");
+    };
     let rest = label.value.split_off(cut);
     link.url.truncate(url_cut);
     // Positions count bytes, and a bare address never spans lines.
@@ -102,13 +184,14 @@ fn split_bare_link(node: &mut Node, source: &str) -> Option<Node> {
     };
     label.position = Some(shortened.clone());
     link.position = Some(shortened);
-    Some(Node::Text(mdast::Text {
+    out.push(Node::Link(link));
+    out.push(Node::Text(mdast::Text {
         value: rest,
         position: Some(markdown::unist::Position {
             start: at,
             end: position.end,
         }),
-    }))
+    }));
 }
 
 /// Math parsing is on by default, so prose that merely contains two dollar
@@ -2762,5 +2845,123 @@ mod tests {
                 symbol: "TSLA.US".to_string()
             })
         );
+    }
+
+    fn link_label(node: &Node) -> String {
+        match node {
+            Node::Text(text) => text.value.clone(),
+            _ => node
+                .children()
+                .map(|children| children.iter().map(link_label).collect())
+                .unwrap_or_default(),
+        }
+    }
+
+    fn collect_links(node: &Node, links: &mut Vec<(String, String)>) {
+        if let Node::Link(link) = node {
+            links.push((link.url.clone(), link_label(node)));
+        }
+        for child in node.children().into_iter().flatten() {
+            collect_links(child, links);
+        }
+    }
+
+    /// Every link (url, label) the document holds once bare links are ended.
+    fn bare_links(source: &str) -> Vec<(String, String)> {
+        let options = NodeContext::default().markdown_extensions.parse_options();
+        let mut root = markdown::to_mdast(source, &options).unwrap();
+        end_bare_links_at_wide_punctuation(&mut root, source);
+        let mut links = Vec::new();
+        collect_links(&root, &mut links);
+        links
+    }
+
+    fn link(url: &str) -> Vec<(String, String)> {
+        vec![(url.to_string(), url.to_string())]
+    }
+
+    #[test]
+    fn bare_link_ends_at_wide_punctuation() {
+        assert_eq!(bare_links("页（http://a/?x=1），见"), link("http://a/?x=1"));
+        assert_eq!(
+            bare_links("https://example.com/a。b"),
+            link("https://example.com/a")
+        );
+    }
+
+    #[test]
+    fn bare_link_with_a_dot_look_alike_in_its_host_is_not_linked() {
+        for source in [
+            "https://example.com。au/login",
+            "see https://example.com．au/login now",
+            "https://example.com｡au",
+            "www.example.com。au/login",
+        ] {
+            assert_eq!(bare_links(source), Vec::new(), "{source}");
+        }
+    }
+
+    #[test]
+    fn bare_link_keeps_kana_iteration_marks() {
+        assert_eq!(
+            bare_links("https://ja.wikipedia.org/wiki/佐々木"),
+            link("https://ja.wikipedia.org/wiki/佐々木")
+        );
+        assert_eq!(bare_links("http://a/〇〆ゝ〻"), link("http://a/〇〆ゝ〻"));
+    }
+
+    #[test]
+    fn bare_link_cut_at_wide_punctuation_is_trimmed_like_gfm() {
+        assert_eq!(bare_links("(见 http://a/x)。"), link("http://a/x"));
+        assert_eq!(bare_links("见 http://a/x.，好"), link("http://a/x"));
+        assert_eq!(bare_links("见 http://a/(x)。"), link("http://a/(x)"));
+    }
+
+    #[test]
+    fn explicit_link_label_is_not_relinked() {
+        let source = "[https://trusted.example。x](https://evil.example)";
+        assert!(
+            !bare_links(source)
+                .iter()
+                .any(|(url, _)| url == "https://trusted.example")
+        );
+        let mut cx = NodeContext::default();
+        let document = parse(source, &mut cx).unwrap();
+        let paragraph = first_paragraph(&document.blocks[0]).expect("expected paragraph");
+        let links: Vec<(String, String)> = paragraph
+            .children
+            .iter()
+            .flat_map(|node| {
+                node.marks.iter().filter_map(|(range, mark)| {
+                    Some((
+                        mark.link.as_ref()?.url.to_string(),
+                        node.text[range.clone()].to_string(),
+                    ))
+                })
+            })
+            .collect();
+        assert_eq!(
+            links,
+            vec![(
+                "https://evil.example".to_string(),
+                "https://trusted.example。x".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn ending_many_bare_links_is_linear() {
+        let source = "http://a.b/x。 ".repeat(20_000);
+        let options = NodeContext::default().markdown_extensions.parse_options();
+        let mut root = markdown::to_mdast(&source, &options).unwrap();
+        let started = std::time::Instant::now();
+        end_bare_links_at_wide_punctuation(&mut root, &source);
+        let elapsed = started.elapsed();
+        let mut links = Vec::new();
+        collect_links(&root, &mut links);
+        assert_eq!(links.len(), 20_000);
+        assert!(links.iter().all(|(url, _)| url == "http://a.b/x"));
+        // The pass used to insert into the paragraph's children in place, which took seconds.
+        assert!(elapsed.as_millis() < 1_000, "took {elapsed:?}");
     }
 }
