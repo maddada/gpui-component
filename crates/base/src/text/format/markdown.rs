@@ -91,7 +91,10 @@ fn dot_ends_sentence(after: Option<char>) -> bool {
             || ends_bare_link(character)
             || matches!(
                 character,
-                '\u{2E80}'..='\u{9FFF}'
+                // Not the enclosed and squared forms (U+3200 to U+33FF: ㏄, ㎏, ㉑), which a
+                // browser also folds to ASCII in a host (re-check 3 of #762).
+                '\u{2E80}'..='\u{31FF}'
+                    | '\u{3400}'..='\u{9FFF}'
                     | '\u{AC00}'..='\u{D7AF}'
                     | '\u{F900}'..='\u{FAFF}'
                     // Full-width forms, but not their letters and digits (０-９, Ａ-Ｚ, ａ-ｚ),
@@ -2946,6 +2949,18 @@ mod tests {
         assert_eq!(bare_links("https://bank.com。ａｕ/login"), Vec::new());
         assert_eq!(bare_links("https://bank.com．ＡＵ"), Vec::new());
         assert_eq!(bare_links("https://bank.com。１/x"), Vec::new());
+        // So are the enclosed and squared forms (㏄ is "cc", ㉑ is "21").
+        for source in [
+            "https://bank.com。㏄/login",
+            "https://bank.com。㎏",
+            "https://bank.com．㉑/x",
+        ] {
+            assert_eq!(bare_links(source), Vec::new(), "{source}");
+        }
+        assert_eq!(
+            bare_links("见 https://example.com。中国"),
+            link("https://example.com")
+        );
         assert_eq!(
             bare_links("见 https://example.com。（下）"),
             link("https://example.com")
