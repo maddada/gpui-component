@@ -25,7 +25,90 @@ pub(crate) fn parse(source: &str, cx: &mut NodeContext) -> Result<ParsedDocument
     prose.constructs.math_text = false;
     prose.constructs.math_flow = false;
     flatten_unclaimed_math(&mut root, source, &prose, cx);
+    end_bare_links_at_wide_punctuation(&mut root, source);
     Ok(ast_to_document(source, root, cx))
+}
+
+/// Punctuation that ends a bare address: CJK and full-width punctuation, curly quotes and the
+/// ellipsis. GFM ends an autolink literal only at ASCII punctuation, so in `页（http://a/?x=1），见`
+/// it kept `），见` as part of the address (Ghostex #762). None of these is written inside a real
+/// URL, and letters of any script (an IDN host, a CJK path) still carry on. Ghostex's link list
+/// (`gx-chat-core` transcript/markdown_links.rs) ends addresses at the same characters.
+fn ends_bare_link(character: char) -> bool {
+    matches!(
+        character,
+        '\u{2018}'..='\u{201F}'
+            | '\u{2026}'
+            | '\u{3000}'..='\u{303F}'
+            | '\u{FE10}'..='\u{FE1F}'
+            | '\u{FE30}'..='\u{FE6B}'
+            | '\u{FF01}'..='\u{FF0F}'
+            | '\u{FF1A}'..='\u{FF20}'
+            | '\u{FF3B}'..='\u{FF40}'
+            | '\u{FF5B}'..='\u{FF65}'
+    )
+}
+
+/// Ends every bare address (a GFM autolink literal) at the first character `ends_bare_link`
+/// accepts; what follows becomes plain text again. `<…>` and `[…](…)` links keep the address their
+/// author wrote.
+fn end_bare_links_at_wide_punctuation(node: &mut Node, source: &str) {
+    let Some(children) = node.children_mut() else {
+        return;
+    };
+    let mut index = 0;
+    while index < children.len() {
+        if let Some(rest) = split_bare_link(&mut children[index], source) {
+            children.insert(index + 1, rest);
+            index += 2;
+            continue;
+        }
+        end_bare_links_at_wide_punctuation(&mut children[index], source);
+        index += 1;
+    }
+}
+
+/// Shortens a bare-address link to its part before wide punctuation and answers the text that
+/// followed, or `None` when `node` is no such link.
+fn split_bare_link(node: &mut Node, source: &str) -> Option<Node> {
+    let Node::Link(link) = node else {
+        return None;
+    };
+    let position = link.position.clone()?;
+    let [Node::Text(label)] = link.children.as_mut_slice() else {
+        return None;
+    };
+    // Only a bare address is written exactly as its label.
+    if source.get(position.start.offset..position.end.offset)? != label.value {
+        return None;
+    }
+    let cut = label.value.find(ends_bare_link).filter(|cut| *cut > 0)?;
+    // `www.` and email literals get a scheme in front of what was written.
+    let url_cut = link
+        .url
+        .ends_with(label.value.as_str())
+        .then(|| link.url.len() - (label.value.len() - cut))?;
+    let rest = label.value.split_off(cut);
+    link.url.truncate(url_cut);
+    // Positions count bytes, and a bare address never spans lines.
+    let at = Point::new(
+        position.start.line,
+        position.start.column + cut,
+        position.start.offset + cut,
+    );
+    let shortened = markdown::unist::Position {
+        start: position.start.clone(),
+        end: at.clone(),
+    };
+    label.position = Some(shortened.clone());
+    link.position = Some(shortened);
+    Some(Node::Text(mdast::Text {
+        value: rest,
+        position: Some(markdown::unist::Position {
+            start: at,
+            end: position.end,
+        }),
+    }))
 }
 
 /// Math parsing is on by default, so prose that merely contains two dollar
