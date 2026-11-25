@@ -56,12 +56,15 @@ fn ends_bare_link(character: char) -> bool {
 }
 
 /// Whether `address` written up to a dot look-alike (。 ． ｡) is still in its host: past any
-/// `scheme://` and before the first `/`, `?` or `#`. Ending the address there would link another
-/// domain (`https://example.com。au/login` is not `https://example.com`), so such an address is
-/// not linked at all. Ghostex's link list (`gx-chat-core` transcript/markdown_links.rs) applies
-/// the same rule.
-fn ends_in_host(address: &str, end: char) -> bool {
-    if !matches!(end, '\u{3002}' | '\u{FF0E}' | '\u{FF61}') {
+/// `scheme://` and before the first `/`, `?` or `#`, with a letter, digit or other address
+/// character after the dot (`after`). Ending the address there would link another domain
+/// (`https://example.com。au/login` is not `https://example.com`), so such an address is not
+/// linked at all. A dot that ends the sentence (whitespace, the end of the text, or a CJK
+/// character after it, as in `见 https://example.com。` or `https://example.com。我们`) is
+/// punctuation, and the address before it is linked (re-check of #762). Ghostex's link list
+/// (`gx-chat-core` transcript/markdown_links.rs) applies the same rule.
+fn ends_in_host(address: &str, end: char, after: Option<char>) -> bool {
+    if !matches!(end, '\u{3002}' | '\u{FF0E}' | '\u{FF61}') || dot_ends_sentence(after) {
         return false;
     }
     let host = match address.split_once("://") {
@@ -76,6 +79,24 @@ fn ends_in_host(address: &str, end: char) -> bool {
         _ => address,
     };
     !host.contains(['/', '?', '#'])
+}
+
+/// Whether what follows a dot look-alike makes it a sentence's full stop: nothing (the end of the
+/// bare address, which GFM ends at whitespace or the end of the text), whitespace, or a CJK
+/// character (ideographs, kana, Hangul, CJK and full-width punctuation).
+fn dot_ends_sentence(after: Option<char>) -> bool {
+    after.is_none_or(|character| {
+        character.is_whitespace()
+            || ends_bare_link(character)
+            || matches!(
+                character,
+                '\u{2E80}'..='\u{9FFF}'
+                    | '\u{AC00}'..='\u{D7AF}'
+                    | '\u{F900}'..='\u{FAFF}'
+                    | '\u{FF00}'..='\u{FFEF}'
+                    | '\u{20000}'..='\u{3FFFF}'
+            )
+    })
 }
 
 /// The length GFM gives a bare address written as `address` and followed by a space, or `None`
@@ -153,7 +174,8 @@ fn end_bare_link(mut link: mdast::Link, source: &str, out: &mut Vec<Node>) {
         return;
     };
     let address = &label.value[..cut];
-    let Some(cut) = (!ends_in_host(address, end))
+    let after = label.value[cut + end.len_utf8()..].chars().next();
+    let Some(cut) = (!ends_in_host(address, end, after))
         .then(|| gfm_bare_link_len(address))
         .flatten()
     else {
@@ -2899,6 +2921,21 @@ mod tests {
         ] {
             assert_eq!(bare_links(source), Vec::new(), "{source}");
         }
+    }
+
+    #[test]
+    fn bare_link_before_a_sentences_wide_full_stop_is_linked() {
+        for source in [
+            "见 https://example.com。",
+            "见 https://example.com。 然后",
+            "见 https://example.com。我们",
+            "see https://example.com． next",
+            "https://example.com｡\nnext line",
+        ] {
+            assert_eq!(bare_links(source), link("https://example.com"), "{source}");
+        }
+        assert_eq!(bare_links("https://example.com。au"), Vec::new());
+        assert_eq!(bare_links("https://example.com。1/x"), Vec::new());
     }
 
     #[test]
