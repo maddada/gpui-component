@@ -210,6 +210,17 @@ impl TextInputState {
         dispatch!(self, |state| state.read(cx).context_menu_capabilities())
     }
 
+    /// The selected text, or `None` when nothing is selected.
+    pub(crate) fn selected_text(&self, cx: &App) -> Option<SharedString> {
+        dispatch!(self, |state| {
+            let state = state.read(cx);
+            if state.selected_range().is_empty() {
+                return None;
+            }
+            Some(SharedString::from(state.selected_text().to_string()))
+        })
+    }
+
     /// Whether every character is already selected, so Select All has nothing
     /// left to offer.
     pub(crate) fn is_all_selected(&self, cx: &App) -> bool {

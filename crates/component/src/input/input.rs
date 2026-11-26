@@ -28,6 +28,45 @@ use crate::ThemeStyled as _;
 struct NativeTouchSelection(bool);
 impl Global for NativeTouchSelection {}
 
+/// A right click in an [`Input`], handed to the application that draws the
+/// input's menu itself ([`set_context_menu_presenter`]).
+#[derive(Clone)]
+pub struct InputContextMenuRequest {
+    /// Where the right click was, in the window's coordinates.
+    pub position: gpui::Point<gpui::Pixels>,
+    /// The input's focus handle. The menu's items dispatch the input's own
+    /// actions through it ([`Cut`](super::Cut), [`Copy`](super::Copy),
+    /// [`Paste`](super::Paste), [`SelectAll`](super::SelectAll),
+    /// [`GoToDefinition`](super::GoToDefinition),
+    /// [`ToggleCodeActions`](super::ToggleCodeActions)), as the built-in menu does.
+    pub focus_handle: gpui::FocusHandle,
+    /// What the input allows right now: whether it is editable, whether there is
+    /// a selection that may be copied, and a code editor's extra items.
+    pub capabilities: InputContextMenuCapabilities,
+    /// The selected text, `None` when nothing is selected or the value is masked.
+    pub selected_text: Option<SharedString>,
+}
+
+pub use gpui_base::input::InputContextMenuCapabilities;
+
+type ContextMenuPresenter = Rc<dyn Fn(InputContextMenuRequest, &mut Window, &mut App)>;
+
+struct InputContextMenuPresenter(ContextMenuPresenter);
+impl Global for InputContextMenuPresenter {}
+
+/// Show every [`Input`]'s right-click menu through `presenter` instead of the
+/// built-in native menu, for an application that draws its own menus.
+///
+/// An input with its own [`Input::context_menu`] builder keeps that builder,
+/// and an input whose state turned its context menu off shows nothing, as
+/// before. The presenter runs with the input released, so it may read it.
+pub fn set_context_menu_presenter(
+    cx: &mut App,
+    presenter: impl Fn(InputContextMenuRequest, &mut Window, &mut App) + 'static,
+) {
+    cx.set_global(InputContextMenuPresenter(Rc::new(presenter)));
+}
+
 /// Let the platform draw the touch selection UI of a focused [`Input`]: the
 /// selection handles and the edit menu a long press leaves behind.
 ///
@@ -738,8 +777,26 @@ impl RenderOnce for Input {
         state.set_placeholder_color(self.placeholder_color, cx);
         state.set_editor_scrollbar(self.scrollbar_thickness, self.scrollbar_show, cx);
         let custom = self.context_menu_builder.clone();
+        let menu_state = state.clone();
         state.on_context_menu(
             Rc::new(move |_, capabilities, position, window, cx| {
+                if custom.is_none()
+                    && let Some(presenter) = cx
+                        .try_global::<InputContextMenuPresenter>()
+                        .map(|presenter| presenter.0.clone())
+                {
+                    let selected_text = menu_state
+                        .selected_text(cx)
+                        .filter(|_| !capabilities.is_masked());
+                    let request = InputContextMenuRequest {
+                        position,
+                        focus_handle: menu_state.presentation(cx).focus_handle().clone(),
+                        capabilities,
+                        selected_text,
+                    };
+                    presenter(request, window, cx);
+                    return;
+                }
                 let menu = if let Some(custom) = custom.as_ref() {
                     custom(NativeMenu::new(), window, cx)
                 } else {
